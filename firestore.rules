@@ -1,0 +1,263 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && request.auth.token.email == 'muhajir52@guru.sma.belajar.id';
+    }
+
+    function userDocExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function userRole() {
+      return userDocExists()
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : 'guest';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (isSignedIn() && userRole() == 'super_admin');
+    }
+
+    function isLeadership() {
+      return isAdmin() || (isSignedIn() && userRole() in ['kepala_sekolah', 'supervisor']);
+    }
+
+    function isSchoolStaff() {
+      return isLeadership() || (isSignedIn() && userRole() in ['guru', 'tendik', 'wali_kelas']);
+    }
+
+    function isValidRole(role) {
+      return role in ['super_admin', 'kepala_sekolah', 'guru', 'tendik', 'supervisor', 'wali_kelas', 'orang_tua'];
+    }
+
+    // Health connection check document (read-only ping)
+    match /test/connection {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Users & RBAC profiles
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (request.auth.uid == userId || isAdmin() || isLeadership() || userRole() == 'tendik');
+      allow list: if isSignedIn() && (isAdmin() || isLeadership() || userRole() == 'tendik' || resource.data.uid == request.auth.uid);
+      allow create: if isValidId(userId) && isSignedIn()
+        && incoming().uid is string && incoming().uid.size() <= 128
+        && incoming().email is string && incoming().email.size() <= 180
+        && incoming().fullName is string && incoming().fullName.size() <= 120
+        && isValidRole(incoming().role)
+        && incoming().isActive is bool
+        && (
+          isAdmin() ||
+          (request.auth.uid == userId && incoming().uid == request.auth.uid && incoming().role == 'orang_tua')
+        );
+      allow update: if isValidId(userId) && isSignedIn()
+        && incoming().uid == existing().uid
+        && incoming().fullName is string && incoming().fullName.size() <= 120
+        && isValidRole(incoming().role)
+        && (!('photoUrl' in incoming()) || (incoming().photoUrl is string && incoming().photoUrl.size() <= 300000))
+        && (
+          isAdmin() ||
+          (request.auth.uid == userId && incoming().role == existing().role && incoming().isActive == existing().isActive)
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // Public School Profile CMS Content (public read, admin/tendik write)
+    match /school_content/{sectionKey} {
+      allow read: if true;
+      allow create, update: if isValidId(sectionKey)
+        && (isAdmin() || userRole() in ['kepala_sekolah', 'tendik'])
+        && incoming().sectionKey is string && incoming().sectionKey.size() <= 64
+        && incoming().title is string && incoming().title.size() <= 200
+        && incoming().body is string && incoming().body.size() <= 10000;
+      allow delete: if isValidId(sectionKey) && isAdmin();
+    }
+
+    // Announcements, News, Achievements & PPDB (public read for published, staff write)
+    match /announcements/{announcementId} {
+      allow read: if resource == null || resource.data.isPublished == true || isSchoolStaff();
+      allow create, update: if isValidId(announcementId)
+        && (isAdmin() || userRole() in ['kepala_sekolah', 'tendik', 'guru'])
+        && incoming().title is string && incoming().title.size() <= 200
+        && incoming().category in ['Berita', 'Pengumuman', 'Prestasi', 'PPDB']
+        && incoming().summary is string && incoming().summary.size() <= 500
+        && incoming().content is string && incoming().content.size() <= 10000
+        && (!('imageUrl' in incoming()) || (incoming().imageUrl is string && incoming().imageUrl.size() <= 300000))
+        && incoming().isPublished is bool;
+      allow delete: if isValidId(announcementId) && (isAdmin() || userRole() in ['kepala_sekolah', 'tendik']);
+    }
+
+    // School Photo & Media Gallery (public read, admin/kepala_sekolah/tendik write)
+    match /gallery_items/{galleryId} {
+      allow read: if true;
+      allow create, update: if isValidId(galleryId)
+        && (isAdmin() || userRole() in ['kepala_sekolah', 'tendik'])
+        && incoming().title is string && incoming().title.size() > 0 && incoming().title.size() <= 200
+        && incoming().mediaType in ['Foto', 'Video']
+        && incoming().url is string && incoming().url.size() > 0 && incoming().url.size() <= 300000
+        && incoming().caption is string && incoming().caption.size() <= 500
+        && incoming().date is string && incoming().date.size() <= 30;
+      allow delete: if isValidId(galleryId) && (isAdmin() || userRole() in ['kepala_sekolah', 'tendik']);
+    }
+
+    // Academic Calendar Events (public read, admin/tendik/kepala_sekolah write)
+    match /calendar_events/{eventId} {
+      allow read: if true;
+      allow create, update: if isValidId(eventId)
+        && (isAdmin() || userRole() in ['kepala_sekolah', 'tendik'])
+        && incoming().title is string && incoming().title.size() <= 180
+        && incoming().eventDate is string && incoming().eventDate.size() <= 30;
+      allow delete: if isValidId(eventId) && (isAdmin() || userRole() == 'tendik');
+    }
+
+    // Academic Years
+    match /academic_years/{yearId} {
+      allow read: if true;
+      allow create, update: if isValidId(yearId)
+        && (isAdmin() || userRole() == 'tendik')
+        && incoming().name is string && incoming().name.size() <= 30
+        && incoming().semester in ['Ganjil', 'Genap']
+        && incoming().isActive is bool;
+      allow delete: if isValidId(yearId) && isAdmin();
+    }
+
+    // Classes / Rombel
+    match /classes/{classId} {
+      allow read: if isSignedIn();
+      allow create, update: if isValidId(classId)
+        && (isAdmin() || userRole() in ['tendik', 'kepala_sekolah'])
+        && incoming().name is string && incoming().name.size() <= 40
+        && incoming().gradeLevel in ['X', 'XI', 'XII'];
+      allow delete: if isValidId(classId) && isAdmin();
+    }
+
+    // Subjects
+    match /subjects/{subjectId} {
+      allow read: if isSignedIn();
+      allow create, update: if isValidId(subjectId)
+        && (isAdmin() || userRole() in ['tendik', 'kepala_sekolah'])
+        && incoming().code is string && incoming().code.size() <= 20
+        && incoming().name is string && incoming().name.size() <= 120;
+      allow delete: if isValidId(subjectId) && isAdmin();
+    }
+
+    // Teachers & Staff directory (public summary needed on profile website, write restricted)
+    match /teachers_staff/{personId} {
+      allow read: if true;
+      allow create, update: if isValidId(personId)
+        && (isAdmin() || userRole() in ['tendik', 'kepala_sekolah'])
+        && incoming().fullName is string && incoming().fullName.size() <= 120
+        && (!('photoUrl' in incoming()) || (incoming().photoUrl is string && incoming().photoUrl.size() <= 300000))
+        && incoming().type in ['Guru', 'Tendik'];
+      allow delete: if isValidId(personId) && (isAdmin() || userRole() == 'tendik');
+    }
+
+    // Students (PII protected: staff, leadership, or linked parent)
+    match /students/{studentId} {
+      allow get: if isValidId(studentId) && (isSchoolStaff() || (isSignedIn() && resource.data.parentUid == request.auth.uid));
+      allow list: if isSchoolStaff() || (isSignedIn() && resource.data.parentUid == request.auth.uid);
+      allow create, update: if isValidId(studentId)
+        && (isAdmin() || userRole() in ['tendik', 'kepala_sekolah', 'wali_kelas'])
+        && incoming().nis is string && incoming().nis.size() <= 30
+        && incoming().nisn is string && incoming().nisn.size() <= 30
+        && incoming().fullName is string && incoming().fullName.size() <= 120
+        && incoming().status in ['Aktif', 'Lulus', 'Mutasi', 'Nonaktif'];
+      allow delete: if isValidId(studentId) && (isAdmin() || userRole() == 'tendik');
+    }
+
+    // Grades
+    match /grades/{gradeId} {
+      allow read: if isSchoolStaff() || (isSignedIn() && resource.data.parentUid == request.auth.uid);
+      allow create, update: if isValidId(gradeId)
+        && (isAdmin() || userRole() in ['guru', 'wali_kelas', 'tendik', 'kepala_sekolah'])
+        && incoming().studentId is string && incoming().studentId.size() <= 128
+        && incoming().subjectId is string && incoming().subjectId.size() <= 128
+        && incoming().finalScore is number && incoming().finalScore >= 0 && incoming().finalScore <= 100;
+      allow delete: if isValidId(gradeId) && isAdmin();
+    }
+
+    // Attendance
+    match /attendance/{attendanceId} {
+      allow read: if isSchoolStaff() || (isSignedIn() && resource.data.parentUid == request.auth.uid);
+      allow create, update: if isValidId(attendanceId)
+        && (isAdmin() || userRole() in ['guru', 'wali_kelas', 'tendik', 'kepala_sekolah'])
+        && incoming().studentId is string && incoming().studentId.size() <= 128
+        && incoming().status in ['Hadir', 'Terlambat', 'Izin', 'Sakit', 'Alpa']
+        && incoming().verified is bool;
+      allow delete: if isValidId(attendanceId) && isAdmin();
+    }
+
+    // Attendance Notifications (WhatsApp Logs)
+    match /attendance_notifications/{notifId} {
+      allow read: if isSchoolStaff() || (isSignedIn() && resource.data.parentUid == request.auth.uid);
+      allow create, update: if isValidId(notifId)
+        && (isAdmin() || userRole() in ['guru', 'wali_kelas', 'tendik', 'kepala_sekolah'])
+        && incoming().attendanceId is string && incoming().attendanceId.size() <= 128
+        && incoming().deliveryStatus in ['pending', 'sent', 'failed'];
+      allow delete: if isValidId(notifId) && isAdmin();
+    }
+
+    // Digital Archive Folders
+    match /archive_folders/{folderId} {
+      allow read: if isSchoolStaff();
+      allow create, update: if isValidId(folderId)
+        && (isAdmin() || userRole() in ['tendik', 'kepala_sekolah', 'supervisor'])
+        && incoming().rootCategory in ['Manajerial', 'Kewirausahaan', 'Supervisi Tendik']
+        && incoming().name is string && incoming().name.size() <= 150;
+      allow delete: if isValidId(folderId) && (isAdmin() || userRole() == 'tendik');
+    }
+
+    // Digital Archives
+    match /digital_archives/{archiveId} {
+      allow read: if isSchoolStaff();
+      allow create, update: if isValidId(archiveId)
+        && isSchoolStaff()
+        && incoming().rootCategory in ['Manajerial', 'Kewirausahaan', 'Supervisi Tendik']
+        && incoming().title is string && incoming().title.size() <= 200
+        && incoming().fileType in ['PDF', 'DOCX', 'XLSX', 'PPTX', 'JPG', 'PNG'];
+      allow delete: if isValidId(archiveId) && (isAdmin() || userRole() == 'tendik');
+    }
+
+    // Digital Supervision Assessments & Schedules
+    match /supervisions/{supervisionId} {
+      allow read: if isSchoolStaff();
+      allow create, update: if isValidId(supervisionId)
+        && (isAdmin() || userRole() in ['supervisor', 'kepala_sekolah', 'tendik'])
+        && incoming().instrumentCode is string && incoming().instrumentCode.size() <= 40
+        && incoming().assesseeName is string && incoming().assesseeName.size() <= 120
+        && incoming().status in ['Terjadwal', 'Berlangsung', 'Menunggu Validasi', 'Disetujui'];
+      allow delete: if isValidId(supervisionId) && isAdmin();
+    }
+
+    // Activity Audit Logs (append-only for authenticated users, read for admin/leadership)
+    match /activity_logs/{logId} {
+      allow read: if isAdmin() || isLeadership() || userRole() == 'tendik';
+      allow create: if isValidId(logId) && isSignedIn()
+        && incoming().actorUid == request.auth.uid
+        && incoming().summary is string && incoming().summary.size() <= 400;
+      allow update, delete: if false;
+    }
+  }
+}

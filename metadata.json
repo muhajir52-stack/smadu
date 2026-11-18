@@ -1,0 +1,6 @@
+{
+  "name": "SIMS SMA Darul Ulum Kepohbaru",
+  "description": "Sistem Informasi Manajemen Sekolah Terintegrasi SMA Darul Ulum Kepohbaru, Bojonegoro — mencakup Web Profil Sekolah, Akademik, Absensi Online dengan Notifikasi WhatsApp Orang Tua, Arsip Digital, Supervisi Digital PKKS 2026, dan RBAC 7 Peran.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

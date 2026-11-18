@@ -1,0 +1,374 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Akun pengguna SIMS SMA Darul Ulum Kepohbaru dengan peran RBAC dan tautan entitas.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "role": {
+          "type": "string",
+          "enum": ["super_admin", "kepala_sekolah", "guru", "tendik", "supervisor", "wali_kelas", "orang_tua"]
+        },
+        "nip": { "type": "string", "maxLength": 40 },
+        "phone": { "type": "string", "maxLength": 30 },
+        "linkedStudentIds": { "type": "array" },
+        "linkedClassIds": { "type": "array" },
+        "photoUrl": { "type": "string", "maxLength": 300000 },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "fullName", "role", "isActive"]
+    },
+    "SchoolContent": {
+      "title": "SchoolContent",
+      "description": "Konten profil sekolah publik yang dikelola dari CMS administrator.",
+      "type": "object",
+      "properties": {
+        "sectionKey": { "type": "string", "maxLength": 64 },
+        "title": { "type": "string", "maxLength": 200 },
+        "subtitle": { "type": "string", "maxLength": 300 },
+        "body": { "type": "string", "maxLength": 10000 },
+        "metadata": { "type": "object" },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["sectionKey", "title", "body"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Berita, pengumuman resmi, dan prestasi siswa/sekolah.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 200 },
+        "category": { "type": "string", "enum": ["Berita", "Pengumuman", "Prestasi", "PPDB"] },
+        "summary": { "type": "string", "maxLength": 500 },
+        "content": { "type": "string", "maxLength": 10000 },
+        "audience": { "type": "string", "enum": ["Publik", "Internal", "Orang Tua"] },
+        "publishedAt": { "type": "string", "maxLength": 30 },
+        "isPublished": { "type": "boolean" },
+        "authorUid": { "type": "string", "maxLength": 128 },
+        "authorName": { "type": "string", "maxLength": 120 },
+        "imageUrl": { "type": "string", "maxLength": 300000 }
+      },
+      "required": ["title", "category", "summary", "content", "audience", "isPublished"]
+    },
+    "GalleryItem": {
+      "title": "GalleryItem",
+      "description": "Galeri foto dan video fasilitas serta kegiatan sekolah.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 200 },
+        "mediaType": { "type": "string", "enum": ["Foto", "Video"] },
+        "url": { "type": "string", "maxLength": 300000 },
+        "caption": { "type": "string", "maxLength": 500 },
+        "date": { "type": "string", "maxLength": 30 }
+      },
+      "required": ["title", "mediaType", "url", "date"]
+    },
+    "CalendarEvent": {
+      "title": "CalendarEvent",
+      "description": "Agenda kalender akademik dan kegiatan sekolah.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 180 },
+        "eventDate": { "type": "string", "maxLength": 30 },
+        "endDate": { "type": "string", "maxLength": 30 },
+        "category": { "type": "string", "maxLength": 50 },
+        "description": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["title", "eventDate", "category"]
+    },
+    "AcademicYear": {
+      "title": "AcademicYear",
+      "description": "Tahun pelajaran dan semester aktif.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 30 },
+        "semester": { "type": "string", "enum": ["Ganjil", "Genap"] },
+        "isActive": { "type": "boolean" },
+        "startDate": { "type": "string", "maxLength": 30 },
+        "endDate": { "type": "string", "maxLength": 30 }
+      },
+      "required": ["name", "semester", "isActive"]
+    },
+    "ClassRoom": {
+      "title": "ClassRoom",
+      "description": "Data rombongan belajar / kelas dan wali kelas.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 40 },
+        "gradeLevel": { "type": "string", "enum": ["X", "XI", "XII"] },
+        "academicYear": { "type": "string", "maxLength": 30 },
+        "homeroomTeacherId": { "type": "string", "maxLength": 128 },
+        "homeroomTeacherName": { "type": "string", "maxLength": 120 },
+        "capacity": { "type": "number" }
+      },
+      "required": ["name", "gradeLevel", "academicYear"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Master mata pelajaran dan KKM.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "maxLength": 20 },
+        "name": { "type": "string", "maxLength": 120 },
+        "category": { "type": "string", "maxLength": 60 },
+        "kkm": { "type": "number" },
+        "teacherName": { "type": "string", "maxLength": 120 }
+      },
+      "required": ["code", "name", "category", "kkm"]
+    },
+    "TeacherStaff": {
+      "title": "TeacherStaff",
+      "description": "Master data guru dan tenaga kependidikan.",
+      "type": "object",
+      "properties": {
+        "nip": { "type": "string", "maxLength": 40 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "type": { "type": "string", "enum": ["Guru", "Tendik"] },
+        "position": { "type": "string", "maxLength": 120 },
+        "subjectSpecialty": { "type": "string", "maxLength": 120 },
+        "status": { "type": "string", "enum": ["GTY", "GTT", "PTY", "PTT", "PNS", "PPPK"] },
+        "phone": { "type": "string", "maxLength": 30 },
+        "email": { "type": "string", "maxLength": 180 },
+        "photoUrl": { "type": "string", "maxLength": 300000 }
+      },
+      "required": ["fullName", "type", "position", "status"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Master data peserta didik beserta informasi wali murid.",
+      "type": "object",
+      "properties": {
+        "nis": { "type": "string", "maxLength": 30 },
+        "nisn": { "type": "string", "maxLength": 30 },
+        "fullName": { "type": "string", "maxLength": 120 },
+        "gender": { "type": "string", "enum": ["L", "P"] },
+        "classId": { "type": "string", "maxLength": 64 },
+        "className": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["Aktif", "Lulus", "Mutasi", "Nonaktif"] },
+        "parentName": { "type": "string", "maxLength": 120 },
+        "parentWhatsapp": { "type": "string", "maxLength": 30 },
+        "parentUid": { "type": "string", "maxLength": 128 },
+        "enrollmentYear": { "type": "string", "maxLength": 10 },
+        "previousSchool": { "type": "string", "maxLength": 150 }
+      },
+      "required": ["nis", "nisn", "fullName", "gender", "classId", "className", "status", "parentName", "parentWhatsapp"]
+    },
+    "GradeRecord": {
+      "title": "GradeRecord",
+      "description": "Data nilai akademik siswa per mata pelajaran dan semester.",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 120 },
+        "className": { "type": "string", "maxLength": 40 },
+        "subjectId": { "type": "string", "maxLength": 128 },
+        "subjectName": { "type": "string", "maxLength": 120 },
+        "academicYear": { "type": "string", "maxLength": 30 },
+        "semester": { "type": "string", "enum": ["Ganjil", "Genap"] },
+        "formatif": { "type": "number" },
+        "uts": { "type": "number" },
+        "uas": { "type": "number" },
+        "finalScore": { "type": "number" },
+        "predicate": { "type": "string", "maxLength": 20 },
+        "teacherUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["studentId", "subjectId", "academicYear", "semester", "formatif", "uts", "uas", "finalScore"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Pencatatan absensi siswa terverifikasi per tanggal dan mata pelajaran.",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 120 },
+        "classId": { "type": "string", "maxLength": 64 },
+        "className": { "type": "string", "maxLength": 40 },
+        "subjectName": { "type": "string", "maxLength": 120 },
+        "date": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["Hadir", "Terlambat", "Izin", "Sakit", "Alpa"] },
+        "notes": { "type": "string", "maxLength": 300 },
+        "verified": { "type": "boolean" },
+        "recordedByUid": { "type": "string", "maxLength": 128 },
+        "recordedByName": { "type": "string", "maxLength": 120 },
+        "verifiedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["studentId", "classId", "date", "status", "verified", "recordedByUid"]
+    },
+    "AttendanceNotification": {
+      "title": "AttendanceNotification",
+      "description": "Riwayat pemberitahuan WhatsApp kepada orang tua berdasarkan absensi terverifikasi.",
+      "type": "object",
+      "properties": {
+        "attendanceId": { "type": "string", "maxLength": 128 },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 120 },
+        "parentName": { "type": "string", "maxLength": 120 },
+        "recipientPhone": { "type": "string", "maxLength": 30 },
+        "attendanceStatus": { "type": "string", "maxLength": 30 },
+        "messageBody": { "type": "string", "maxLength": 1500 },
+        "deliveryStatus": { "type": "string", "enum": ["pending", "sent", "failed"] },
+        "gatewayNote": { "type": "string", "maxLength": 300 },
+        "sentAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["attendanceId", "studentId", "recipientPhone", "messageBody", "deliveryStatus"]
+    },
+    "ArchiveFolder": {
+      "title": "ArchiveFolder",
+      "description": "Folder dan subfolder arsip digital pada kategori Manajerial, Kewirausahaan, dan Supervisi Tendik.",
+      "type": "object",
+      "properties": {
+        "rootCategory": { "type": "string", "enum": ["Manajerial", "Kewirausahaan", "Supervisi Tendik"] },
+        "parentId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 150 },
+        "description": { "type": "string", "maxLength": 500 },
+        "allowedRoles": { "type": "array" },
+        "createdByUid": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["rootCategory", "name", "allowedRoles"]
+    },
+    "DigitalArchive": {
+      "title": "DigitalArchive",
+      "description": "Metadata dokumen arsip digital sekolah beserta versi dan tautan pratinjau.",
+      "type": "object",
+      "properties": {
+        "folderId": { "type": "string", "maxLength": 128 },
+        "rootCategory": { "type": "string", "enum": ["Manajerial", "Kewirausahaan", "Supervisi Tendik"] },
+        "title": { "type": "string", "maxLength": 200 },
+        "documentNumber": { "type": "string", "maxLength": 80 },
+        "documentDate": { "type": "string", "maxLength": 20 },
+        "documentYear": { "type": "string", "maxLength": 10 },
+        "fileName": { "type": "string", "maxLength": 200 },
+        "fileType": { "type": "string", "enum": ["PDF", "DOCX", "XLSX", "PPTX", "JPG", "PNG"] },
+        "fileSizeLabel": { "type": "string", "maxLength": 40 },
+        "version": { "type": "number" },
+        "previewContent": { "type": "string", "maxLength": 300000 },
+        "versionHistory": { "type": "array" },
+        "uploadedByUid": { "type": "string", "maxLength": 128 },
+        "uploadedByName": { "type": "string", "maxLength": 120 }
+      },
+      "required": ["folderId", "rootCategory", "title", "fileName", "fileType", "version"]
+    },
+    "SupervisionSchedule": {
+      "title": "SupervisionSchedule",
+      "description": "Jadwal dan asesmen supervisi digital mengacu instrumen PKKS 2026.",
+      "type": "object",
+      "properties": {
+        "instrumentCode": { "type": "string", "maxLength": 40 },
+        "instrumentTitle": { "type": "string", "maxLength": 200 },
+        "academicYear": { "type": "string", "maxLength": 30 },
+        "period": { "type": "string", "maxLength": 60 },
+        "assesseeName": { "type": "string", "maxLength": 120 },
+        "assesseeRole": { "type": "string", "maxLength": 80 },
+        "supervisorUid": { "type": "string", "maxLength": 128 },
+        "supervisorName": { "type": "string", "maxLength": 120 },
+        "scheduledDate": { "type": "string", "maxLength": 20 },
+        "status": { "type": "string", "enum": ["Terjadwal", "Berlangsung", "Menunggu Validasi", "Disetujui"] },
+        "totalScore": { "type": "number" },
+        "maxScore": { "type": "number" },
+        "finalScore": { "type": "number" },
+        "predicate": { "type": "string", "maxLength": 40 },
+        "unfilledCount": { "type": "number" },
+        "duplicateCount": { "type": "number" },
+        "scoresMap": { "type": "object" },
+        "examinerFindings": { "type": "string", "maxLength": 3000 },
+        "examinerStrengths": { "type": "string", "maxLength": 3000 },
+        "examinerSuggestions": { "type": "string", "maxLength": 3000 },
+        "followUpPlan": { "type": "string", "maxLength": 3000 },
+        "validatedByName": { "type": "string", "maxLength": 120 },
+        "validatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["instrumentCode", "instrumentTitle", "academicYear", "assesseeName", "supervisorName", "scheduledDate", "status"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Jejak audit aktivitas pengguna pada sistem.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "actorName": { "type": "string", "maxLength": 120 },
+        "actorRole": { "type": "string", "maxLength": 40 },
+        "action": { "type": "string", "maxLength": 60 },
+        "module": { "type": "string", "maxLength": 60 },
+        "summary": { "type": "string", "maxLength": 400 },
+        "timestamp": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["actorUid", "actorName", "action", "module", "summary", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Profil pengguna SIMS dan peran RBAC."
+    },
+    "/school_content/{sectionKey}": {
+      "schema": { "$ref": "#/entities/SchoolContent" },
+      "description": "Konten profil sekolah publik yang dikelola admin."
+    },
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/Announcement" },
+      "description": "Berita, pengumuman, prestasi, dan info PPDB."
+    },
+    "/calendar_events/{eventId}": {
+      "schema": { "$ref": "#/entities/CalendarEvent" },
+      "description": "Kalender akademik sekolah."
+    },
+    "/gallery_items/{galleryId}": {
+      "schema": { "$ref": "#/entities/GalleryItem" },
+      "description": "Galeri foto dan media kegiatan sekolah."
+    },
+    "/academic_years/{yearId}": {
+      "schema": { "$ref": "#/entities/AcademicYear" },
+      "description": "Daftar tahun pelajaran dan semester."
+    },
+    "/classes/{classId}": {
+      "schema": { "$ref": "#/entities/ClassRoom" },
+      "description": "Data rombongan belajar dan wali kelas."
+    },
+    "/subjects/{subjectId}": {
+      "schema": { "$ref": "#/entities/Subject" },
+      "description": "Daftar mata pelajaran."
+    },
+    "/teachers_staff/{personId}": {
+      "schema": { "$ref": "#/entities/TeacherStaff" },
+      "description": "Data master guru dan tenaga kependidikan."
+    },
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Data master peserta didik."
+    },
+    "/grades/{gradeId}": {
+      "schema": { "$ref": "#/entities/GradeRecord" },
+      "description": "Nilai akademik peserta didik."
+    },
+    "/attendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/AttendanceRecord" },
+      "description": "Absensi siswa terverifikasi."
+    },
+    "/attendance_notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/AttendanceNotification" },
+      "description": "Riwayat notifikasi WhatsApp orang tua."
+    },
+    "/archive_folders/{folderId}": {
+      "schema": { "$ref": "#/entities/ArchiveFolder" },
+      "description": "Folder arsip digital."
+    },
+    "/digital_archives/{archiveId}": {
+      "schema": { "$ref": "#/entities/DigitalArchive" },
+      "description": "Dokumen arsip digital sekolah."
+    },
+    "/supervisions/{supervisionId}": {
+      "schema": { "$ref": "#/entities/SupervisionSchedule" },
+      "description": "Jadwal, skor, bukti fisik, dan tindak lanjut supervisi digital."
+    },
+    "/activity_logs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Log audit aktivitas pengguna."
+    }
+  }
+}
