@@ -532,8 +532,8 @@ export const SupervisionModule: React.FC = () => {
                               onChange={(e) => {
                                 const arc = archives.find((a) => a.id === e.target.value);
                                 updateIndicatorEntry(ind.id, {
-                                  linkedArchiveId: arc?.id || undefined,
-                                  linkedArchiveTitle: arc?.title || undefined,
+                                  linkedArchiveId: arc?.id || '',
+                                  linkedArchiveTitle: arc?.title || '',
                                 });
                               }}
                               className="w-full px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white"
@@ -768,7 +768,7 @@ export const SupervisionModule: React.FC = () => {
                 period: newScheduleModal.period,
                 assesseeName: newScheduleModal.assesseeName,
                 assesseeRole: newScheduleModal.assesseeRole,
-                supervisorUid: firebaseUser?.uid || 'system',
+                supervisorUid: currentUser?.uid || firebaseUser?.uid || 'system',
                 supervisorName: newScheduleModal.supervisorName,
                 scheduledDate: newScheduleModal.scheduledDate,
                 status: 'Terjadwal',

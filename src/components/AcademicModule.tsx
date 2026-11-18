@@ -38,6 +38,7 @@ export const AcademicModule: React.FC = () => {
     saveAcademicYear,
     saveGrade,
     pushToast,
+    currentUser,
     firebaseUser,
     usersDirectory,
   } = useSims();
@@ -160,7 +161,7 @@ export const AcademicModule: React.FC = () => {
       uas: u2,
       finalScore,
       predicate,
-      teacherUid: firebaseUser?.uid || 'system',
+      teacherUid: currentUser?.uid || firebaseUser?.uid || 'system',
       notes: gradeModal.notes || '',
     });
     setGradeModal(null);
@@ -737,7 +738,7 @@ export const AcademicModule: React.FC = () => {
                     .filter((u) => u.role === 'orang_tua')
                     .map((u) => (
                       <option key={u.uid} value={u.uid}>
-                        {u.fullName} ({u.email})
+                        {u.fullName} ({u.username || u.email || u.uid})
                       </option>
                     ))}
                 </select>

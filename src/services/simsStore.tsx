@@ -1,23 +1,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import {
-  User,
-  onAuthStateChanged,
-  signInWithPopup,
-  signOut,
-} from 'firebase/auth';
+import { User, onAuthStateChanged, signOut } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
   doc,
-  getDoc,
-  getDocs,
   onSnapshot,
   query,
   setDoc,
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { auth, db, googleProvider, testFirestoreConnection } from '../lib/firebase';
+import { auth, db, testFirestoreConnection } from '../lib/firebase';
 import { OperationType, handleFirestoreError } from '../lib/firebaseErrors';
 import {
   AcademicYear,
@@ -63,12 +56,14 @@ import {
 } from '../data/seedData';
 import { ROLE_DEFINITIONS, checkPermission } from '../data/rbacMatrix';
 
-const BOOTSTRAP_ADMIN_EMAIL = 'muhajir52@guru.sma.belajar.id';
-
 interface ToastMessage {
   id: string;
   type: 'success' | 'error' | 'info';
   text: string;
+}
+
+export interface SaveUserInput extends UserProfile {
+  password?: string;
 }
 
 interface SimsContextValue {
@@ -79,7 +74,11 @@ interface SimsContextValue {
   setPreviewRole: (role: RoleCode | null) => void;
   previewRole: RoleCode | null;
   can: (module: ModuleKey, action: PermissionAction) => boolean;
-  loginWithGoogle: () => Promise<void>;
+  loginWithCredentials: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  changeOwnPassword: (
+    currentPassword: string,
+    newPassword: string
+  ) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   loadingData: boolean;
   toasts: ToastMessage[];
@@ -149,7 +148,7 @@ interface SimsContextValue {
   deleteArchiveDocument: (id: string, title: string) => Promise<void>;
   saveSupervision: (sup: SupervisionAssessment) => Promise<void>;
   approveSupervision: (sup: SupervisionAssessment) => Promise<void>;
-  saveUserProfile: (user: UserProfile) => Promise<void>;
+  saveUserProfile: (user: SaveUserInput) => Promise<boolean>;
   updateRbacPermission: (
     role: RoleCode,
     module: ModuleKey,
@@ -163,6 +162,30 @@ const SimsContext = createContext<SimsContextValue | null>(null);
 
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefined(item)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    Object.entries(value as Record<string, unknown>).forEach(([k, v]) => {
+      if (v !== undefined) {
+        out[k] = stripUndefined(v);
+      }
+    });
+    return out as T;
+  }
+  return value;
+}
+
+function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
+  const idx = list.findIndex((x) => x.id === item.id);
+  if (idx >= 0) {
+    return list.map((x, i) => (i === idx ? item : x));
+  }
+  return [item, ...list];
 }
 
 export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -224,12 +247,112 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [activeRole, customRbac]
   );
 
-  // Test Firestore connection on mount
-  useEffect(() => {
-    testFirestoreConnection();
+  const syncStateToServer = useCallback(async (patch: Record<string, unknown>) => {
+    try {
+      await fetch('/api/sims/state', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(stripUndefined(patch)),
+      });
+    } catch {
+      // Non-blocking fallback
+    }
   }, []);
 
-  // Public listeners for Web Profil Sekolah (always available)
+  const hydrateAuthenticatedServerData = useCallback(async (user: UserProfile) => {
+    setLoadingData(true);
+    try {
+      const [stateResp, usersResp] = await Promise.all([
+        fetch('/api/sims/state', { credentials: 'include' }),
+        ['super_admin', 'kepala_sekolah', 'supervisor', 'tendik'].includes(user.role)
+          ? fetch('/api/auth/users', { credentials: 'include' })
+          : Promise.resolve(null),
+      ]);
+
+      if (stateResp.ok) {
+        const data = await stateResp.json();
+        const st = data?.state || {};
+        if (Array.isArray(st.schoolContent)) setSchoolContent(st.schoolContent);
+        if (Array.isArray(st.announcements)) setAnnouncements(st.announcements);
+        if (Array.isArray(st.calendarEvents)) setCalendarEvents(st.calendarEvents);
+        if (Array.isArray(st.galleryItems)) setGalleryItems(st.galleryItems);
+        if (Array.isArray(st.academicYears)) setAcademicYears(st.academicYears);
+        if (Array.isArray(st.classes)) setClasses(st.classes);
+        if (Array.isArray(st.subjects)) setSubjects(st.subjects);
+        if (Array.isArray(st.teachersStaff)) setTeachersStaff(st.teachersStaff);
+        if (Array.isArray(st.students)) setStudents(st.students);
+        if (Array.isArray(st.grades)) setGrades(st.grades);
+        if (Array.isArray(st.attendance)) setAttendance(st.attendance);
+        if (Array.isArray(st.notifications)) setNotifications(st.notifications);
+        if (Array.isArray(st.archiveFolders)) setArchiveFolders(st.archiveFolders);
+        if (Array.isArray(st.archives)) setArchives(st.archives);
+        if (Array.isArray(st.supervisions)) setSupervisions(st.supervisions);
+        if (Array.isArray(st.activityLogs)) setActivityLogs(st.activityLogs);
+        if (st.customRbac && typeof st.customRbac === 'object') setCustomRbac(st.customRbac);
+      }
+
+      if (usersResp && usersResp.ok) {
+        const usersData = await usersResp.json();
+        if (Array.isArray(usersData?.users)) {
+          setUsersDirectory(usersData.users);
+        }
+      }
+    } catch {
+      // Fallback to initial seed data cleanly
+    } finally {
+      setLoadingData(false);
+    }
+  }, []);
+
+  // Test Firestore connection on mount & hydrate public profile + check cookie session
+  useEffect(() => {
+    testFirestoreConnection();
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const [pubResp, meResp] = await Promise.all([
+          fetch('/api/sims/public'),
+          fetch('/api/auth/me', { credentials: 'include' }),
+        ]);
+
+        if (!cancelled && pubResp.ok) {
+          const pub = await pubResp.json();
+          if (Array.isArray(pub.schoolContent)) setSchoolContent(pub.schoolContent);
+          if (Array.isArray(pub.announcements)) setAnnouncements(pub.announcements);
+          if (Array.isArray(pub.calendarEvents)) setCalendarEvents(pub.calendarEvents);
+          if (Array.isArray(pub.galleryItems)) setGalleryItems(pub.galleryItems);
+          if (Array.isArray(pub.teachersStaff)) setTeachersStaff(pub.teachersStaff);
+        }
+
+        if (!cancelled && meResp.ok) {
+          const meData = await meResp.json();
+          if (meData?.user) {
+            setCurrentUser(meData.user as UserProfile);
+            await hydrateAuthenticatedServerData(meData.user as UserProfile);
+          }
+        }
+      } catch {
+        // Ignore network errors during boot
+      } finally {
+        if (!cancelled) {
+          setAuthReady(true);
+        }
+      }
+    })();
+
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      setFirebaseUser(user);
+    });
+
+    return () => {
+      cancelled = true;
+      unsubAuth();
+    };
+  }, [hydrateAuthenticatedServerData]);
+
+  // Public listeners for Web Profil Sekolah (if Firebase data exists)
   useEffect(() => {
     const unsubs: Array<() => void> = [];
 
@@ -241,9 +364,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setSchoolContent(snap.docs.map((d) => ({ id: d.id, ...d.data() } as SchoolContentSection)));
           }
         },
-        () => {
-          // Fallback silently to initial static content if not seeded yet
-        }
+        () => {}
       )
     );
 
@@ -302,126 +423,13 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubs.forEach((u) => u());
   }, []);
 
-  const seedInitialFirestoreData = useCallback(async (adminUid: string) => {
-    try {
-      const checkSnap = await getDocs(collection(db, 'academic_years'));
-      if (!checkSnap.empty) return;
-
-      const batch = writeBatch(db);
-      INITIAL_SCHOOL_CONTENT.forEach((item) => batch.set(doc(db, 'school_content', item.id), item));
-      INITIAL_ANNOUNCEMENTS.forEach((item) => batch.set(doc(db, 'announcements', item.id), item));
-      INITIAL_CALENDAR.forEach((item) => batch.set(doc(db, 'calendar_events', item.id), item));
-      INITIAL_GALLERY.forEach((item) => batch.set(doc(db, 'gallery_items', item.id), item));
-      INITIAL_ACADEMIC_YEARS.forEach((item) => batch.set(doc(db, 'academic_years', item.id), item));
-      INITIAL_CLASSES.forEach((item) => batch.set(doc(db, 'classes', item.id), item));
-      INITIAL_SUBJECTS.forEach((item) => batch.set(doc(db, 'subjects', item.id), item));
-      INITIAL_TEACHERS_STAFF.forEach((item) => batch.set(doc(db, 'teachers_staff', item.id), item));
-      INITIAL_STUDENTS.forEach((item) => batch.set(doc(db, 'students', item.id), item));
-      INITIAL_GRADES.forEach((item) => batch.set(doc(db, 'grades', item.id), item));
-      INITIAL_ATTENDANCE.forEach((item) => batch.set(doc(db, 'attendance', item.id), item));
-      INITIAL_NOTIFICATIONS.forEach((item) => batch.set(doc(db, 'attendance_notifications', item.id), item));
-      INITIAL_ARCHIVE_FOLDERS.forEach((item) => batch.set(doc(db, 'archive_folders', item.id), item));
-      INITIAL_ARCHIVES.forEach((item) => batch.set(doc(db, 'digital_archives', item.id), item));
-      INITIAL_SUPERVISIONS.forEach((item) => batch.set(doc(db, 'supervisions', item.id), item));
-      INITIAL_ACTIVITY_LOGS.forEach((item) =>
-        batch.set(doc(db, 'activity_logs', item.id), { ...item, actorUid: adminUid })
-      );
-
-      await batch.commit();
-    } catch (err) {
-      console.error('Seed data error:', err);
-    }
-  }, []);
-
-  // Auth listener & user profile sync
-  useEffect(() => {
-    const unsubAuth = onAuthStateChanged(auth, async (user) => {
-      setFirebaseUser(user);
-      if (!user) {
-        setCurrentUser(null);
-        setPreviewRole(null);
-        setAuthReady(true);
-        return;
-      }
-
-      setLoadingData(true);
-      try {
-        const userRef = doc(db, 'users', user.uid);
-        const snap = await getDoc(userRef);
-        const isBootAdmin = user.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
-
-        if (!snap.exists()) {
-          const now = new Date().toISOString();
-          const newProfile: UserProfile = {
-            id: user.uid,
-            uid: user.uid,
-            email: user.email || '',
-            fullName: user.displayName || (isBootAdmin ? 'H. Ahmad Muhajir, S.Pd., M.Pd.' : 'Pengguna Sekolah'),
-            role: isBootAdmin ? 'super_admin' : 'orang_tua',
-            isActive: true,
-            createdAt: now,
-            updatedAt: now,
-          };
-          await setDoc(userRef, newProfile);
-          setCurrentUser(newProfile);
-          if (isBootAdmin) {
-            await seedInitialFirestoreData(user.uid);
-          }
-        } else {
-          const existingProfile = { id: snap.id, ...snap.data() } as UserProfile;
-          setCurrentUser(existingProfile);
-          if (isBootAdmin || existingProfile.role === 'super_admin') {
-            await seedInitialFirestoreData(user.uid);
-          }
-        }
-      } catch (err) {
-        console.error('Error initializing user profile:', err);
-      } finally {
-        setLoadingData(false);
-        setAuthReady(true);
-      }
-    });
-
-    return () => unsubAuth();
-  }, [seedInitialFirestoreData]);
-
-  // Authenticated Firestore subscriptions scoped by role
+  // Optional Firestore authenticated listeners if a Firebase Auth user happens to be signed in
   useEffect(() => {
     if (!firebaseUser || !currentUser) return;
 
     const unsubs: Array<() => void> = [];
     const role = currentUser.role;
     const isStaff = ['super_admin', 'kepala_sekolah', 'guru', 'tendik', 'supervisor', 'wali_kelas'].includes(role);
-
-    unsubs.push(
-      onSnapshot(
-        collection(db, 'academic_years'),
-        (snap) => {
-          if (!snap.empty) setAcademicYears(snap.docs.map((d) => ({ id: d.id, ...d.data() } as AcademicYear)));
-        },
-        (err) => handleFirestoreError(err, OperationType.GET, 'academic_years')
-      )
-    );
-
-    unsubs.push(
-      onSnapshot(
-        collection(db, 'classes'),
-        (snap) => {
-          if (!snap.empty) setClasses(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ClassRoom)));
-        },
-        (err) => handleFirestoreError(err, OperationType.GET, 'classes')
-      )
-    );
-
-    unsubs.push(
-      onSnapshot(
-        collection(db, 'subjects'),
-        (snap) => {
-          if (!snap.empty) setSubjects(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Subject)));
-        },
-        (err) => handleFirestoreError(err, OperationType.GET, 'subjects')
-      )
-    );
 
     if (isStaff) {
       unsubs.push(
@@ -433,132 +441,6 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
           (err) => handleFirestoreError(err, OperationType.GET, 'students')
         )
       );
-
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'grades'),
-          (snap) => {
-            if (!snap.empty) setGrades(snap.docs.map((d) => ({ id: d.id, ...d.data() } as GradeRecord)));
-          },
-          (err) => handleFirestoreError(err, OperationType.GET, 'grades')
-        )
-      );
-
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'attendance'),
-          (snap) => {
-            if (!snap.empty) setAttendance(snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceRecord)));
-          },
-          (err) => handleFirestoreError(err, OperationType.GET, 'attendance')
-        )
-      );
-
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'attendance_notifications'),
-          (snap) => {
-            if (!snap.empty)
-              setNotifications(snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceNotification)));
-          },
-          (err) => handleFirestoreError(err, OperationType.GET, 'attendance_notifications')
-        )
-      );
-
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'archive_folders'),
-          (snap) => {
-            if (!snap.empty) setArchiveFolders(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ArchiveFolder)));
-          },
-          (err) => handleFirestoreError(err, OperationType.GET, 'archive_folders')
-        )
-      );
-
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'digital_archives'),
-          (snap) => {
-            if (!snap.empty) setArchives(snap.docs.map((d) => ({ id: d.id, ...d.data() } as DigitalArchive)));
-          },
-          (err) => handleFirestoreError(err, OperationType.GET, 'digital_archives')
-        )
-      );
-
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'supervisions'),
-          (snap) => {
-            if (!snap.empty)
-              setSupervisions(snap.docs.map((d) => ({ id: d.id, ...d.data() } as SupervisionAssessment)));
-          },
-          (err) => handleFirestoreError(err, OperationType.GET, 'supervisions')
-        )
-      );
-    } else {
-      // Parent scoped queries
-      unsubs.push(
-        onSnapshot(
-          query(collection(db, 'students'), where('parentUid', '==', firebaseUser.uid)),
-          (snap) => {
-            if (!snap.empty) setStudents(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Student)));
-          },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'students')
-        )
-      );
-      unsubs.push(
-        onSnapshot(
-          query(collection(db, 'attendance'), where('parentUid', '==', firebaseUser.uid)),
-          (snap) => {
-            if (!snap.empty) setAttendance(snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceRecord)));
-          },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'attendance')
-        )
-      );
-      unsubs.push(
-        onSnapshot(
-          query(collection(db, 'grades'), where('parentUid', '==', firebaseUser.uid)),
-          (snap) => {
-            if (!snap.empty) setGrades(snap.docs.map((d) => ({ id: d.id, ...d.data() } as GradeRecord)));
-          },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'grades')
-        )
-      );
-      unsubs.push(
-        onSnapshot(
-          query(collection(db, 'attendance_notifications'), where('parentUid', '==', firebaseUser.uid)),
-          (snap) => {
-            if (!snap.empty)
-              setNotifications(snap.docs.map((d) => ({ id: d.id, ...d.data() } as AttendanceNotification)));
-          },
-          (err) => handleFirestoreError(err, OperationType.LIST, 'attendance_notifications')
-        )
-      );
-    }
-
-    if (['super_admin', 'kepala_sekolah', 'supervisor', 'tendik'].includes(role)) {
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'users'),
-          (snap) => {
-            setUsersDirectory(snap.docs.map((d) => ({ id: d.id, ...d.data() } as UserProfile)));
-          },
-          (err) => handleFirestoreError(err, OperationType.GET, 'users')
-        )
-      );
-      unsubs.push(
-        onSnapshot(
-          collection(db, 'activity_logs'),
-          (snap) => {
-            if (!snap.empty) {
-              const logs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as ActivityLog));
-              logs.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-              setActivityLogs(logs);
-            }
-          },
-          (err) => handleFirestoreError(err, OperationType.GET, 'activity_logs')
-        )
-      );
     }
 
     return () => unsubs.forEach((u) => u());
@@ -566,11 +448,11 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const recordLog = useCallback(
     async (action: string, module: string, summary: string) => {
-      if (!firebaseUser || !currentUser) return;
+      if (!currentUser) return;
       const id = makeId('log');
       const log: ActivityLog = {
         id,
-        actorUid: firebaseUser.uid,
+        actorUid: currentUser.uid || firebaseUser?.uid || 'system',
         actorName: currentUser.fullName,
         actorRole: currentUser.role,
         action,
@@ -578,126 +460,253 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
         summary,
         timestamp: new Date().toISOString(),
       };
-      try {
-        await setDoc(doc(db, 'activity_logs', id), log);
-      } catch {
-        // Non-blocking audit log fallback in local state
-        setActivityLogs((prev) => [log, ...prev]);
+      const nextLogs = [log, ...activityLogs].slice(0, 300);
+      setActivityLogs(nextLogs);
+      await syncStateToServer({ activityLogs: nextLogs });
+      if (firebaseUser) {
+        try {
+          await setDoc(doc(db, 'activity_logs', id), log);
+        } catch {
+          // Non-blocking
+        }
       }
     },
-    [firebaseUser, currentUser]
+    [activityLogs, currentUser, firebaseUser, syncStateToServer]
   );
 
-  const loginWithGoogle = useCallback(async () => {
-    try {
-      await signInWithPopup(auth, googleProvider);
-      pushToast('success', 'Berhasil masuk ke SIMS SMA Darul Ulum Kepohbaru.');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Gagal login Google';
-      pushToast('error', `Autentikasi gagal: ${msg}`);
-    }
-  }, [pushToast]);
+  const loginWithCredentials = useCallback(
+    async (username: string, password: string): Promise<{ ok: boolean; error?: string }> => {
+      setLoadingData(true);
+      try {
+        const resp = await fetch('/api/auth/login', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: username.trim(), password }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data?.user) {
+          const errorMsg = data?.error || 'Username atau password salah.';
+          pushToast('error', errorMsg);
+          return { ok: false, error: errorMsg };
+        }
+        const loggedUser = data.user as UserProfile;
+        setCurrentUser(loggedUser);
+        setPreviewRole(null);
+        await hydrateAuthenticatedServerData(loggedUser);
+        pushToast('success', `Selamat datang, ${loggedUser.fullName}.`);
+        return { ok: true };
+      } catch {
+        const errorMsg = 'Gagal menghubungi server autentikasi.';
+        pushToast('error', errorMsg);
+        return { ok: false, error: errorMsg };
+      } finally {
+        setLoadingData(false);
+      }
+    },
+    [hydrateAuthenticatedServerData, pushToast]
+  );
+
+  const changeOwnPassword = useCallback(
+    async (currentPassword: string, newPassword: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const resp = await fetch('/api/auth/change-password', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentPassword, newPassword }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          const errorMsg = data?.error || 'Gagal mengganti password.';
+          pushToast('error', errorMsg);
+          return { ok: false, error: errorMsg };
+        }
+        await recordLog('UBAH_PASSWORD', 'Keamanan Akun', `Mengubah password akun ${currentUser?.username || currentUser?.fullName}`);
+        pushToast('success', 'Password akun berhasil diperbarui.');
+        return { ok: true };
+      } catch {
+        const errorMsg = 'Gagal terhubung ke server.';
+        pushToast('error', errorMsg);
+        return { ok: false, error: errorMsg };
+      }
+    },
+    [currentUser, pushToast, recordLog]
+  );
 
   const logout = useCallback(async () => {
-    await signOut(auth);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch {
+      // Ignore
+    }
+    if (firebaseUser) {
+      try {
+        await signOut(auth);
+      } catch {
+        // Ignore
+      }
+    }
+    setCurrentUser(null);
+    setUsersDirectory([]);
     setPreviewRole(null);
     pushToast('info', 'Anda telah keluar dari portal SIMS.');
-  }, [pushToast]);
+  }, [firebaseUser, pushToast]);
 
-  // CRUD implementations
+  // CRUD implementations (sync locally + server store, and Firestore when Firebase Auth user is present)
   const saveSchoolContent = useCallback(
     async (section: SchoolContentSection) => {
-      const payload: SchoolContentSection = {
+      const payload: SchoolContentSection = stripUndefined({
         ...section,
         updatedBy: currentUser?.fullName || 'Admin',
         updatedAt: new Date().toISOString(),
-      };
-      await setDoc(doc(db, 'school_content', section.sectionKey), payload);
+      });
+      const next = upsertById(schoolContent, payload);
+      setSchoolContent(next);
+      await syncStateToServer({ schoolContent: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'school_content', section.sectionKey), payload);
+      }
       await recordLog('PERBARUI_CMS', 'Profil Sekolah', `Memperbarui bagian ${section.title}`);
       pushToast('success', `Konten "${section.title}" berhasil disimpan.`);
     },
-    [currentUser, pushToast, recordLog]
+    [currentUser, firebaseUser, pushToast, recordLog, schoolContent, syncStateToServer]
   );
 
   const saveAnnouncement = useCallback(
     async (item: AnnouncementItem) => {
       const id = item.id || makeId('ann');
-      await setDoc(doc(db, 'announcements', id), { ...item, id });
+      const payload = stripUndefined({ ...item, id });
+      const next = upsertById(announcements, payload).sort((a, b) =>
+        b.publishedAt.localeCompare(a.publishedAt)
+      );
+      setAnnouncements(next);
+      await syncStateToServer({ announcements: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'announcements', id), payload);
+      }
       await recordLog('PUBLIKASI_PENGUMUMAN', 'Profil Sekolah', `Menyimpan ${item.category}: ${item.title}`);
       pushToast('success', `${item.category} berhasil dipublikasikan.`);
     },
-    [pushToast, recordLog]
+    [announcements, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const deleteAnnouncement = useCallback(
     async (id: string) => {
-      await deleteDoc(doc(db, 'announcements', id));
+      const next = announcements.filter((a) => a.id !== id);
+      setAnnouncements(next);
+      await syncStateToServer({ announcements: next });
+      if (firebaseUser) {
+        await deleteDoc(doc(db, 'announcements', id));
+      }
       await recordLog('HAPUS_PENGUMUMAN', 'Profil Sekolah', `Menghapus pengumuman ID ${id}`);
       pushToast('info', 'Pengumuman dihapus.');
     },
-    [pushToast, recordLog]
+    [announcements, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const saveCalendarEvent = useCallback(
     async (ev: CalendarEvent) => {
       const id = ev.id || makeId('cal');
-      await setDoc(doc(db, 'calendar_events', id), { ...ev, id });
+      const payload = stripUndefined({ ...ev, id });
+      const next = upsertById(calendarEvents, payload);
+      setCalendarEvents(next);
+      await syncStateToServer({ calendarEvents: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'calendar_events', id), payload);
+      }
       await recordLog('SIMPAN_KALENDER', 'Kalender Akademik', `Menyimpan agenda: ${ev.title}`);
       pushToast('success', 'Agenda kalender akademik tersimpan.');
     },
-    [pushToast, recordLog]
+    [calendarEvents, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const deleteCalendarEvent = useCallback(
     async (id: string) => {
-      await deleteDoc(doc(db, 'calendar_events', id));
+      const next = calendarEvents.filter((c) => c.id !== id);
+      setCalendarEvents(next);
+      await syncStateToServer({ calendarEvents: next });
+      if (firebaseUser) {
+        await deleteDoc(doc(db, 'calendar_events', id));
+      }
       pushToast('info', 'Agenda kalender dihapus.');
     },
-    [pushToast]
+    [calendarEvents, firebaseUser, pushToast, syncStateToServer]
   );
 
   const saveGalleryItem = useCallback(
     async (item: GalleryMediaItem) => {
       const id = item.id || makeId('gal');
-      try {
-        await setDoc(doc(db, 'gallery_items', id), { ...item, id });
-        await recordLog('KELOLA_FOTO', 'Foto & Galeri', `Memperbarui item galeri: ${item.title}`);
-        pushToast('success', `Foto "${item.title}" berhasil disimpan.`);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `gallery_items/${id}`);
+      const payload = stripUndefined({ ...item, id });
+      const next = upsertById(galleryItems, payload).sort((a, b) => b.date.localeCompare(a.date));
+      setGalleryItems(next);
+      await syncStateToServer({ galleryItems: next });
+      if (firebaseUser) {
+        try {
+          await setDoc(doc(db, 'gallery_items', id), payload);
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, `gallery_items/${id}`);
+        }
       }
+      await recordLog('KELOLA_FOTO', 'Foto & Galeri', `Memperbarui item galeri: ${item.title}`);
+      pushToast('success', `Foto "${item.title}" berhasil disimpan.`);
     },
-    [pushToast, recordLog]
+    [firebaseUser, galleryItems, pushToast, recordLog, syncStateToServer]
   );
 
   const deleteGalleryItem = useCallback(
     async (id: string) => {
-      try {
-        await deleteDoc(doc(db, 'gallery_items', id));
-        await recordLog('HAPUS_FOTO', 'Foto & Galeri', `Menghapus item galeri ID ${id}`);
-        pushToast('info', 'Item galeri foto dihapus.');
-      } catch (err) {
-        handleFirestoreError(err, OperationType.DELETE, `gallery_items/${id}`);
+      const next = galleryItems.filter((g) => g.id !== id);
+      setGalleryItems(next);
+      await syncStateToServer({ galleryItems: next });
+      if (firebaseUser) {
+        try {
+          await deleteDoc(doc(db, 'gallery_items', id));
+        } catch (err) {
+          handleFirestoreError(err, OperationType.DELETE, `gallery_items/${id}`);
+        }
       }
+      await recordLog('HAPUS_FOTO', 'Foto & Galeri', `Menghapus item galeri ID ${id}`);
+      pushToast('info', 'Item galeri foto dihapus.');
     },
-    [pushToast, recordLog]
+    [firebaseUser, galleryItems, pushToast, recordLog, syncStateToServer]
   );
 
   const updateOwnPhoto = useCallback(
     async (photoUrl: string) => {
-      if (!firebaseUser || !currentUser) return;
+      if (!currentUser) return;
       const updated: UserProfile = {
         ...currentUser,
         photoUrl,
         updatedAt: new Date().toISOString(),
       };
       try {
-        await setDoc(doc(db, 'users', firebaseUser.uid), updated);
-        setCurrentUser(updated);
+        const resp = await fetch('/api/auth/profile-photo', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ photoUrl }),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setCurrentUser(data.user || updated);
+          setUsersDirectory((prev) =>
+            prev.map((u) => (u.uid === updated.uid ? data.user || updated : u))
+          );
+        } else {
+          setCurrentUser(updated);
+        }
+        if (firebaseUser) {
+          await setDoc(doc(db, 'users', firebaseUser.uid), stripUndefined(updated));
+        }
         await recordLog('UBAH_FOTO_PROFIL', 'Profil Akun', `Mengubah foto profil ${currentUser.fullName}`);
         pushToast('success', 'Foto profil akun berhasil diperbarui.');
       } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+        if (firebaseUser) {
+          handleFirestoreError(err, OperationType.UPDATE, `users/${firebaseUser.uid}`);
+        } else {
+          pushToast('error', 'Gagal memperbarui foto profil akun.');
+        }
       }
     },
     [currentUser, firebaseUser, pushToast, recordLog]
@@ -706,85 +715,129 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const saveAcademicYear = useCallback(
     async (ay: AcademicYear) => {
       const id = ay.id || makeId('ay');
+      const item = { ...ay, id };
+      let next = upsertById(academicYears, item);
       if (ay.isActive) {
-        const batch = writeBatch(db);
-        academicYears.forEach((y) => {
-          if (y.id !== id && y.isActive) {
-            batch.update(doc(db, 'academic_years', y.id), { isActive: false });
-          }
-        });
-        batch.set(doc(db, 'academic_years', id), { ...ay, id });
-        await batch.commit();
-      } else {
-        await setDoc(doc(db, 'academic_years', id), { ...ay, id });
+        next = next.map((y) => (y.id === id ? item : { ...y, isActive: false }));
+      }
+      setAcademicYears(next);
+      await syncStateToServer({ academicYears: next });
+
+      if (firebaseUser) {
+        if (ay.isActive) {
+          const batch = writeBatch(db);
+          academicYears.forEach((y) => {
+            if (y.id !== id && y.isActive) {
+              batch.update(doc(db, 'academic_years', y.id), { isActive: false });
+            }
+          });
+          batch.set(doc(db, 'academic_years', id), item);
+          await batch.commit();
+        } else {
+          await setDoc(doc(db, 'academic_years', id), item);
+        }
       }
       await recordLog('KELOLA_TAHUN_AJARAN', 'Akademik', `Memperbarui tahun pelajaran ${ay.name} (${ay.semester})`);
       pushToast('success', `Tahun Pelajaran ${ay.name} (${ay.semester}) disimpan.`);
     },
-    [academicYears, pushToast, recordLog]
+    [academicYears, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const saveClassRoom = useCallback(
     async (cls: ClassRoom) => {
       const id = cls.id || makeId('cls');
-      await setDoc(doc(db, 'classes', id), { ...cls, id });
+      const item = { ...cls, id };
+      const next = upsertById(classes, item);
+      setClasses(next);
+      await syncStateToServer({ classes: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'classes', id), item);
+      }
       await recordLog('KELOLA_KELAS', 'Akademik', `Menyimpan rombel ${cls.name} (Wali Kelas: ${cls.homeroomTeacherName})`);
       pushToast('success', `Kelas ${cls.name} berhasil disimpan.`);
     },
-    [pushToast, recordLog]
+    [classes, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const saveSubject = useCallback(
     async (sub: Subject) => {
       const id = sub.id || makeId('sub');
-      await setDoc(doc(db, 'subjects', id), { ...sub, id });
+      const item = { ...sub, id };
+      const next = upsertById(subjects, item);
+      setSubjects(next);
+      await syncStateToServer({ subjects: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'subjects', id), item);
+      }
       await recordLog('KELOLA_MAPEL', 'Akademik', `Menyimpan mata pelajaran ${sub.name}`);
       pushToast('success', `Mata pelajaran ${sub.name} berhasil disimpan.`);
     },
-    [pushToast, recordLog]
+    [firebaseUser, pushToast, recordLog, subjects, syncStateToServer]
   );
 
   const saveTeacherStaff = useCallback(
     async (ts: TeacherStaff) => {
       const id = ts.id || makeId('gtk');
-      await setDoc(doc(db, 'teachers_staff', id), { ...ts, id });
+      const payload = stripUndefined({ ...ts, id });
+      const next = upsertById(teachersStaff, payload);
+      setTeachersStaff(next);
+      await syncStateToServer({ teachersStaff: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'teachers_staff', id), payload);
+      }
       await recordLog('KELOLA_GTK', 'Akademik', `Menyimpan data ${ts.type}: ${ts.fullName}`);
       pushToast('success', `Data ${ts.fullName} berhasil disimpan.`);
     },
-    [pushToast, recordLog]
+    [firebaseUser, pushToast, recordLog, syncStateToServer, teachersStaff]
   );
 
   const deleteTeacherStaff = useCallback(
     async (id: string) => {
-      await deleteDoc(doc(db, 'teachers_staff', id));
+      const next = teachersStaff.filter((t) => t.id !== id);
+      setTeachersStaff(next);
+      await syncStateToServer({ teachersStaff: next });
+      if (firebaseUser) {
+        await deleteDoc(doc(db, 'teachers_staff', id));
+      }
       pushToast('info', 'Data GTK dihapus.');
     },
-    [pushToast]
+    [firebaseUser, pushToast, syncStateToServer, teachersStaff]
   );
 
   const saveStudent = useCallback(
     async (st: Student) => {
       const id = st.id || makeId('std');
-      await setDoc(doc(db, 'students', id), { ...st, id });
+      const payload = stripUndefined({ ...st, id });
+      const next = upsertById(students, payload);
+      setStudents(next);
+      await syncStateToServer({ students: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'students', id), payload);
+      }
       await recordLog('KELOLA_SISWA', 'Akademik', `Menyimpan data siswa ${st.fullName} (${st.className})`);
       pushToast('success', `Data siswa ${st.fullName} berhasil disimpan.`);
     },
-    [pushToast, recordLog]
+    [firebaseUser, pushToast, recordLog, students, syncStateToServer]
   );
 
   const deleteStudent = useCallback(
     async (id: string) => {
-      await deleteDoc(doc(db, 'students', id));
+      const next = students.filter((s) => s.id !== id);
+      setStudents(next);
+      await syncStateToServer({ students: next });
+      if (firebaseUser) {
+        await deleteDoc(doc(db, 'students', id));
+      }
       await recordLog('HAPUS_SISWA', 'Akademik', `Menghapus siswa ID ${id}`);
       pushToast('info', 'Data siswa dihapus.');
     },
-    [pushToast, recordLog]
+    [firebaseUser, pushToast, recordLog, students, syncStateToServer]
   );
 
   const importStudentsBatch = useCallback(
     async (rows: Partial<Student>[]) => {
-      const batch = writeBatch(db);
-      let count = 0;
+      const createdList: Student[] = [];
+      const batch = firebaseUser ? writeBatch(db) : null;
       rows.forEach((row) => {
         if (!row.fullName) return;
         const id = makeId('std');
@@ -803,25 +856,34 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
           enrollmentYear: row.enrollmentYear || '2026',
           previousSchool: row.previousSchool || '-',
         };
-        batch.set(doc(db, 'students', id), student);
-        count += 1;
+        createdList.push(student);
+        if (batch) batch.set(doc(db, 'students', id), student);
       });
-      await batch.commit();
-      await recordLog('IMPOR_SISWA', 'Akademik', `Mengimpor ${count} data siswa dari Excel`);
-      pushToast('success', `${count} data siswa berhasil diimpor ke database.`);
-      return count;
+      const next = [...createdList, ...students];
+      setStudents(next);
+      await syncStateToServer({ students: next });
+      if (batch) await batch.commit();
+      await recordLog('IMPOR_SISWA', 'Akademik', `Mengimpor ${createdList.length} data siswa dari Excel`);
+      pushToast('success', `${createdList.length} data siswa berhasil diimpor ke database.`);
+      return createdList.length;
     },
-    [classes, pushToast, recordLog]
+    [classes, firebaseUser, pushToast, recordLog, students, syncStateToServer]
   );
 
   const saveGrade = useCallback(
     async (gr: GradeRecord) => {
       const id = gr.id || makeId('grd');
-      await setDoc(doc(db, 'grades', id), { ...gr, id });
+      const payload = stripUndefined({ ...gr, id });
+      const next = upsertById(grades, payload);
+      setGrades(next);
+      await syncStateToServer({ grades: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'grades', id), payload);
+      }
       await recordLog('INPUT_NILAI', 'Akademik', `Menyimpan nilai ${gr.subjectName} untuk ${gr.studentName} (${gr.finalScore})`);
       pushToast('success', `Nilai ${gr.studentName} tersimpan.`);
     },
-    [pushToast, recordLog]
+    [firebaseUser, grades, pushToast, recordLog, syncStateToServer]
   );
 
   const recordVerifiedAttendance = useCallback(
@@ -834,7 +896,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       notifyAllStatuses: boolean;
     }) => {
       const now = new Date().toISOString();
-      const batch = writeBatch(db);
+      const batch = firebaseUser ? writeBatch(db) : null;
       const savedRecords: Array<{ record: AttendanceRecord; student: Student }> = [];
 
       for (const item of params.entries) {
@@ -850,23 +912,29 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
           status: item.status,
           notes: item.notes,
           verified: true,
-          recordedByUid: firebaseUser?.uid || 'system',
+          recordedByUid: currentUser?.uid || firebaseUser?.uid || 'system',
           recordedByName: currentUser?.fullName || 'Guru',
           verifiedAt: now,
           ...(item.student.parentUid ? { parentUid: item.student.parentUid } : {}),
         };
-        batch.set(doc(db, 'attendance', attId), record);
+        if (batch) batch.set(doc(db, 'attendance', attId), record);
         savedRecords.push({ record, student: item.student });
       }
 
       // Step 1: Commit verified attendance records atomically first!
-      await batch.commit();
+      let nextAttendance = [...attendance];
+      savedRecords.forEach(({ record }) => {
+        nextAttendance = upsertById(nextAttendance, record);
+      });
+      setAttendance(nextAttendance);
+      await syncStateToServer({ attendance: nextAttendance });
+      if (batch) await batch.commit();
 
       let sentCount = 0;
+      let nextNotifications = [...notifications];
       if (params.notifyParents) {
         for (const { record, student } of savedRecords) {
-          const shouldNotify =
-            params.notifyAllStatuses || record.status !== 'Hadir';
+          const shouldNotify = params.notifyAllStatuses || record.status !== 'Hadir';
           if (!shouldNotify || !student.parentWhatsapp) continue;
 
           const messageBody = `[SIMS SMA Darul Ulum Kepohbaru] Yth. Bapak/Ibu ${student.parentName}, kami informasikan ananda ${student.fullName} (Kelas ${record.className}) tercatat ${record.status.toUpperCase()} pada mata pelajaran ${record.subjectName} tanggal ${record.date}.${record.notes ? ` Catatan: ${record.notes}.` : ''}`;
@@ -914,9 +982,14 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
             sentAt,
             ...(student.parentUid ? { parentUid: student.parentUid } : {}),
           };
-          await setDoc(doc(db, 'attendance_notifications', notifId), notifDoc);
+          nextNotifications = [notifDoc, ...nextNotifications];
+          if (firebaseUser) {
+            await setDoc(doc(db, 'attendance_notifications', notifId), notifDoc);
+          }
           if (deliveryStatus === 'sent') sentCount += 1;
         }
+        setNotifications(nextNotifications);
+        await syncStateToServer({ notifications: nextNotifications });
       }
 
       await recordLog(
@@ -930,7 +1003,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
       return { savedCount: savedRecords.length, sentCount };
     },
-    [currentUser, firebaseUser, pushToast, recordLog]
+    [attendance, currentUser, firebaseUser, notifications, pushToast, recordLog, syncStateToServer]
   );
 
   const createArchiveFolder = useCallback(
@@ -939,13 +1012,18 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const docData: ArchiveFolder = {
         ...folder,
         id,
-        createdByUid: firebaseUser?.uid || 'system',
+        createdByUid: currentUser?.uid || firebaseUser?.uid || 'system',
       };
-      await setDoc(doc(db, 'archive_folders', id), docData);
+      const next = [...archiveFolders, docData];
+      setArchiveFolders(next);
+      await syncStateToServer({ archiveFolders: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'archive_folders', id), docData);
+      }
       await recordLog('BUAT_FOLDER_ARSIP', 'Arsip Digital', `Membuat folder "${folder.name}" di ${folder.rootCategory}`);
       pushToast('success', `Folder "${folder.name}" berhasil dibuat.`);
     },
-    [firebaseUser, pushToast, recordLog]
+    [archiveFolders, currentUser, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const uploadArchiveDocument = useCallback(
@@ -954,14 +1032,19 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const fullDoc: DigitalArchive = {
         ...docItem,
         id,
-        uploadedByUid: firebaseUser?.uid || 'system',
+        uploadedByUid: currentUser?.uid || firebaseUser?.uid || 'system',
         uploadedByName: currentUser?.fullName || 'Staf Sekolah',
       };
-      await setDoc(doc(db, 'digital_archives', id), fullDoc);
+      const next = [fullDoc, ...archives];
+      setArchives(next);
+      await syncStateToServer({ archives: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'digital_archives', id), fullDoc);
+      }
       await recordLog('UNGGAH_ARSIP', 'Arsip Digital', `Mengunggah dokumen "${docItem.title}" (${docItem.fileType})`);
       pushToast('success', `Dokumen "${docItem.title}" berhasil diarsipkan.`);
     },
-    [currentUser, firebaseUser, pushToast, recordLog]
+    [archives, currentUser, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const updateArchiveDocumentVersion = useCallback(
@@ -983,26 +1066,42 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
           },
         ],
       };
-      await setDoc(doc(db, 'digital_archives', archive.id), updated);
+      const next = upsertById(archives, updated);
+      setArchives(next);
+      await syncStateToServer({ archives: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'digital_archives', archive.id), updated);
+      }
       await recordLog('REVISI_ARSIP', 'Arsip Digital', `Memperbarui "${archive.title}" ke versi v${nextVersion}`);
       pushToast('success', `Dokumen diperbarui ke versi v${nextVersion}.`);
     },
-    [currentUser, pushToast, recordLog]
+    [archives, currentUser, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const deleteArchiveDocument = useCallback(
     async (id: string, title: string) => {
-      await deleteDoc(doc(db, 'digital_archives', id));
+      const next = archives.filter((a) => a.id !== id);
+      setArchives(next);
+      await syncStateToServer({ archives: next });
+      if (firebaseUser) {
+        await deleteDoc(doc(db, 'digital_archives', id));
+      }
       await recordLog('HAPUS_ARSIP', 'Arsip Digital', `Menghapus dokumen "${title}"`);
       pushToast('info', `Dokumen "${title}" dihapus dari arsip.`);
     },
-    [pushToast, recordLog]
+    [archives, firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const saveSupervision = useCallback(
     async (sup: SupervisionAssessment) => {
       const id = sup.id || makeId('sup');
-      await setDoc(doc(db, 'supervisions', id), { ...sup, id });
+      const payload = stripUndefined({ ...sup, id });
+      const next = upsertById(supervisions, payload);
+      setSupervisions(next);
+      await syncStateToServer({ supervisions: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'supervisions', id), payload);
+      }
       await recordLog(
         'SIMPAN_SUPERVISI',
         'Supervisi Digital',
@@ -1010,7 +1109,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
       pushToast('success', `Penilaian supervisi ${sup.instrumentCode} tersimpan.`);
     },
-    [pushToast, recordLog]
+    [firebaseUser, pushToast, recordLog, supervisions, syncStateToServer]
   );
 
   const approveSupervision = useCallback(
@@ -1022,13 +1121,18 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
         return;
       }
-      const updated: SupervisionAssessment = {
+      const updated: SupervisionAssessment = stripUndefined({
         ...sup,
         status: 'Disetujui',
         validatedByName: currentUser?.fullName || 'Kepala Sekolah',
         validatedAt: new Date().toISOString().slice(0, 10),
-      };
-      await setDoc(doc(db, 'supervisions', sup.id), updated);
+      });
+      const next = upsertById(supervisions, updated);
+      setSupervisions(next);
+      await syncStateToServer({ supervisions: next });
+      if (firebaseUser) {
+        await setDoc(doc(db, 'supervisions', sup.id), updated);
+      }
       await recordLog(
         'VALIDASI_SUPERVISI',
         'Supervisi Digital',
@@ -1036,27 +1140,51 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
       pushToast('success', `Hasil supervisi ${sup.instrumentCode} resmi disetujui.`);
     },
-    [currentUser, pushToast, recordLog]
+    [currentUser, firebaseUser, pushToast, recordLog, supervisions, syncStateToServer]
   );
 
   const saveUserProfile = useCallback(
-    async (user: UserProfile) => {
-      const id = user.id || user.uid || makeId('usr');
-      const now = new Date().toISOString();
-      await setDoc(doc(db, 'users', id), {
-        ...user,
-        id,
-        uid: user.uid || id,
-        updatedAt: now,
-        createdAt: user.createdAt || now,
-      });
-      if (firebaseUser?.uid === id) {
-        setCurrentUser({ ...user, id, uid: user.uid || id });
+    async (user: SaveUserInput): Promise<boolean> => {
+      try {
+        const resp = await fetch('/api/auth/users', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: user.id || undefined,
+            username: user.username || '',
+            password: user.password || undefined,
+            fullName: user.fullName,
+            role: user.role,
+            isActive: user.isActive,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data?.user) {
+          pushToast('error', data?.error || 'Gagal menyimpan akun pengguna.');
+          return false;
+        }
+        const savedUser = data.user as UserProfile;
+        setUsersDirectory((prev) => upsertById(prev, savedUser));
+        if (currentUser?.uid === savedUser.uid) {
+          setCurrentUser(savedUser);
+        }
+        if (firebaseUser) {
+          await setDoc(doc(db, 'users', savedUser.id), stripUndefined(savedUser));
+        }
+        await recordLog(
+          'KELOLA_AKUN',
+          'RBAC & Akun',
+          `Memperbarui akun @${savedUser.username || savedUser.fullName} sebagai ${savedUser.role}`
+        );
+        pushToast('success', `Akun ${savedUser.fullName} berhasil disimpan.`);
+        return true;
+      } catch {
+        pushToast('error', 'Gagal menghubungi server manajemen akun.');
+        return false;
       }
-      await recordLog('KELOLA_AKUN', 'RBAC & Akun', `Memperbarui akun ${user.fullName} sebagai ${user.role}`);
-      pushToast('success', `Akun ${user.fullName} berhasil disimpan.`);
     },
-    [firebaseUser, pushToast, recordLog]
+    [currentUser, firebaseUser, pushToast, recordLog]
   );
 
   const updateRbacPermission = useCallback(
@@ -1067,17 +1195,19 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const nextActions = exists
           ? currentActions.filter((a) => a !== action)
           : [...currentActions, action];
-        return {
+        const nextRbac = {
           ...prev,
           [role]: {
             ...prev[role],
             [module]: nextActions,
           },
         };
+        syncStateToServer({ customRbac: nextRbac });
+        return nextRbac;
       });
       pushToast('info', `Hak akses ${role} pada modul ${module} diperbarui.`);
     },
-    [pushToast]
+    [pushToast, syncStateToServer]
   );
 
   const exportBackupJson = useCallback(() => {
@@ -1087,6 +1217,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       schoolContent,
       announcements,
       calendarEvents,
+      galleryItems,
       academicYears,
       classes,
       subjects,
@@ -1116,6 +1247,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     attendance,
     calendarEvents,
     classes,
+    galleryItems,
     grades,
     notifications,
     pushToast,
@@ -1132,33 +1264,91 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const text = await file.text();
         const data = JSON.parse(text);
-        const batch = writeBatch(db);
-        const restoreList = (colName: string, arr?: Array<{ id: string }>) => {
-          if (!Array.isArray(arr)) return;
-          arr.forEach((item) => {
-            if (item?.id) batch.set(doc(db, colName, item.id), item);
-          });
-        };
-        restoreList('school_content', data.schoolContent);
-        restoreList('announcements', data.announcements);
-        restoreList('calendar_events', data.calendarEvents);
-        restoreList('academic_years', data.academicYears);
-        restoreList('classes', data.classes);
-        restoreList('subjects', data.subjects);
-        restoreList('teachers_staff', data.teachersStaff);
-        restoreList('students', data.students);
-        restoreList('grades', data.grades);
-        restoreList('archive_folders', data.archiveFolders);
-        restoreList('digital_archives', data.archives);
-        restoreList('supervisions', data.supervisions);
-        await batch.commit();
+        const patch: Record<string, unknown> = {};
+        if (Array.isArray(data.schoolContent)) {
+          setSchoolContent(data.schoolContent);
+          patch.schoolContent = data.schoolContent;
+        }
+        if (Array.isArray(data.announcements)) {
+          setAnnouncements(data.announcements);
+          patch.announcements = data.announcements;
+        }
+        if (Array.isArray(data.calendarEvents)) {
+          setCalendarEvents(data.calendarEvents);
+          patch.calendarEvents = data.calendarEvents;
+        }
+        if (Array.isArray(data.galleryItems)) {
+          setGalleryItems(data.galleryItems);
+          patch.galleryItems = data.galleryItems;
+        }
+        if (Array.isArray(data.academicYears)) {
+          setAcademicYears(data.academicYears);
+          patch.academicYears = data.academicYears;
+        }
+        if (Array.isArray(data.classes)) {
+          setClasses(data.classes);
+          patch.classes = data.classes;
+        }
+        if (Array.isArray(data.subjects)) {
+          setSubjects(data.subjects);
+          patch.subjects = data.subjects;
+        }
+        if (Array.isArray(data.teachersStaff)) {
+          setTeachersStaff(data.teachersStaff);
+          patch.teachersStaff = data.teachersStaff;
+        }
+        if (Array.isArray(data.students)) {
+          setStudents(data.students);
+          patch.students = data.students;
+        }
+        if (Array.isArray(data.grades)) {
+          setGrades(data.grades);
+          patch.grades = data.grades;
+        }
+        if (Array.isArray(data.archiveFolders)) {
+          setArchiveFolders(data.archiveFolders);
+          patch.archiveFolders = data.archiveFolders;
+        }
+        if (Array.isArray(data.archives)) {
+          setArchives(data.archives);
+          patch.archives = data.archives;
+        }
+        if (Array.isArray(data.supervisions)) {
+          setSupervisions(data.supervisions);
+          patch.supervisions = data.supervisions;
+        }
+        await syncStateToServer(patch);
+
+        if (firebaseUser) {
+          const batch = writeBatch(db);
+          const restoreList = (colName: string, arr?: Array<{ id: string }>) => {
+            if (!Array.isArray(arr)) return;
+            arr.forEach((item) => {
+              if (item?.id) batch.set(doc(db, colName, item.id), stripUndefined(item));
+            });
+          };
+          restoreList('school_content', data.schoolContent);
+          restoreList('announcements', data.announcements);
+          restoreList('calendar_events', data.calendarEvents);
+          restoreList('gallery_items', data.galleryItems);
+          restoreList('academic_years', data.academicYears);
+          restoreList('classes', data.classes);
+          restoreList('subjects', data.subjects);
+          restoreList('teachers_staff', data.teachersStaff);
+          restoreList('students', data.students);
+          restoreList('grades', data.grades);
+          restoreList('archive_folders', data.archiveFolders);
+          restoreList('digital_archives', data.archives);
+          restoreList('supervisions', data.supervisions);
+          await batch.commit();
+        }
         await recordLog('PEMULIHAN_DATA', 'Backup & Pemulihan', `Memulihkan database dari berkas ${file.name}`);
         pushToast('success', 'Pemulihan data dari berkas backup berhasil.');
       } catch {
         pushToast('error', 'Format berkas backup JSON tidak valid.');
       }
     },
-    [pushToast, recordLog]
+    [firebaseUser, pushToast, recordLog, syncStateToServer]
   );
 
   const value: SimsContextValue = {
@@ -1169,7 +1359,8 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setPreviewRole,
     previewRole,
     can,
-    loginWithGoogle,
+    loginWithCredentials,
+    changeOwnPassword,
     logout,
     loadingData,
     toasts,

@@ -629,12 +629,23 @@ function buildSampleScores(
   const map: Record<string, IndicatorScoreEntry> = {};
   inst.indicators.forEach((ind, idx) => {
     const val = (pattern[idx % pattern.length] || 4) as 1 | 2 | 3 | 4;
+    const shouldLinkArchive = (idx === 0 || idx === 2) && Boolean(archiveId);
     map[ind.id] = {
       scale: val,
-      checkedEvidences: ind.physicalEvidences.slice(0, val >= 4 ? ind.physicalEvidences.length : Math.max(1, ind.physicalEvidences.length - 1)),
-      linkedArchiveId: idx === 0 || idx === 2 ? archiveId : undefined,
-      linkedArchiveTitle: idx === 0 || idx === 2 ? archiveTitle : undefined,
-      notes: val === 4 ? 'Bukti fisik lengkap dan terimplementasi konsisten.' : 'Terlaksana baik, tingkatkan dokumentasi tindak lanjut berkala.',
+      checkedEvidences: ind.physicalEvidences.slice(
+        0,
+        val >= 4 ? ind.physicalEvidences.length : Math.max(1, ind.physicalEvidences.length - 1)
+      ),
+      ...(shouldLinkArchive
+        ? {
+            linkedArchiveId: archiveId,
+            linkedArchiveTitle: archiveTitle || '',
+          }
+        : {}),
+      notes:
+        val === 4
+          ? 'Bukti fisik lengkap dan terimplementasi konsisten.'
+          : 'Terlaksana baik, tingkatkan dokumentasi tindak lanjut berkala.',
     };
   });
   return map;
@@ -685,8 +696,12 @@ function createSeededAssessment(
     examinerSuggestions: suggestions,
     followUpPlan,
     followUpStatus: status === 'Disetujui' ? 'Selesai' : 'Proses',
-    validatedByName: status === 'Disetujui' ? 'Dr. H. Supriyadi, M.Pd.' : undefined,
-    validatedAt: status === 'Disetujui' ? '2026-11-12' : undefined,
+    ...(status === 'Disetujui'
+      ? {
+          validatedByName: 'Dr. H. Supriyadi, M.Pd.',
+          validatedAt: '2026-11-12',
+        }
+      : {}),
   };
 }
 

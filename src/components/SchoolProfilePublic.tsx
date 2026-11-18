@@ -33,8 +33,7 @@ export const SchoolProfilePublic: React.FC<Props> = ({ onEnterPortal }) => {
     students,
     classes,
     subjects,
-    firebaseUser,
-    loginWithGoogle,
+    currentUser,
     pushToast,
   } = useSims();
 
@@ -63,13 +62,8 @@ export const SchoolProfilePublic: React.FC<Props> = ({ onEnterPortal }) => {
   const teachersCount = teachersStaff.filter((t) => t.type === 'Guru').length;
   const tendikCount = teachersStaff.filter((t) => t.type === 'Tendik').length;
 
-  const handlePortalAction = async () => {
-    if (firebaseUser) {
-      onEnterPortal();
-    } else {
-      await loginWithGoogle();
-      onEnterPortal();
-    }
+  const handlePortalAction = () => {
+    onEnterPortal();
   };
 
   const handleContactSubmit = (e: React.FormEvent) => {
@@ -128,7 +122,7 @@ export const SchoolProfilePublic: React.FC<Props> = ({ onEnterPortal }) => {
               className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors whitespace-nowrap shrink-0"
             >
               <LogIn className="w-3.5 h-3.5" />
-              {firebaseUser ? 'Buka Dashboard SIMS' : 'Masuk SIMS'}
+              {currentUser ? 'Buka Dashboard SIMS' : 'Masuk SIMS'}
             </button>
           </div>
         </div>
@@ -178,7 +172,7 @@ export const SchoolProfilePublic: React.FC<Props> = ({ onEnterPortal }) => {
                       onClick={handlePortalAction}
                       className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors whitespace-nowrap"
                     >
-                      {firebaseUser ? 'Masuk Ruang Kerja SIMS' : 'Masuk Portal SIMS'}
+                      {currentUser ? 'Masuk Ruang Kerja SIMS' : 'Masuk Portal SIMS'}
                       <ArrowRight className="w-4 h-4" />
                     </button>
                     <button

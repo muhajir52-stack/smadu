@@ -29,7 +29,8 @@ export interface RoleDefinition {
 export interface UserProfile {
   id: string;
   uid: string;
-  email: string;
+  username?: string;
+  email?: string;
   fullName: string;
   role: RoleCode;
   nip?: string;

@@ -3,6 +3,7 @@ import {
   Camera,
   Database,
   Download,
+  KeyRound,
   Plus,
   Save,
   Shield,
@@ -379,7 +380,7 @@ export const CmsManagementView: React.FC = () => {
                 audience: annModal.audience || 'Publik',
                 publishedAt: annModal.publishedAt || new Date().toISOString().slice(0, 10),
                 isPublished: annModal.isPublished ?? true,
-                authorUid: firebaseUser?.uid || 'system',
+                authorUid: currentUser?.uid || firebaseUser?.uid || 'system',
                 authorName: currentUser?.fullName || 'Administrator',
                 ...(annModal.imageUrl ? { imageUrl: annModal.imageUrl } : {}),
               });
@@ -495,14 +496,19 @@ export const CmsManagementView: React.FC = () => {
 export const UsersRbacView: React.FC = () => {
   const {
     can,
+    currentUser,
     usersDirectory,
     customRbac,
     saveUserProfile,
+    changeOwnPassword,
     updateRbacPermission,
+    pushToast,
   } = useSims();
 
   const canManage = can('pengguna_rbac', 'edit');
-  const [userModal, setUserModal] = useState<Partial<UserProfile> | null>(null);
+  const [userModal, setUserModal] = useState<(Partial<UserProfile> & { password?: string }) | null>(null);
+  const [pwdForm, setPwdForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [savingPwd, setSavingPwd] = useState(false);
 
   return (
     <div className="space-y-6">
@@ -513,12 +519,12 @@ export const UsersRbacView: React.FC = () => {
               Manajemen Multi-Akun Pengguna SIMS
             </h2>
             <p className="text-xs text-slate-500">
-              Atur akun guru, staf administrasi, kepala sekolah, supervisor, wali kelas, dan orang tua
+              Kelola username, password, dan hak akses akun administrator, guru, staf, kepala sekolah, supervisor, wali kelas, dan orang tua tanpa email
             </p>
           </div>
           {canManage && (
             <button
-              onClick={() => setUserModal({ role: 'guru', isActive: true })}
+              onClick={() => setUserModal({ role: 'guru', isActive: true, username: '', password: '' })}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800"
             >
               <UserPlus className="w-3.5 h-3.5" />
@@ -532,7 +538,7 @@ export const UsersRbacView: React.FC = () => {
             <thead>
               <tr className="border-b border-slate-200 text-slate-500">
                 <th className="py-2.5 px-3 font-medium">Nama Lengkap</th>
-                <th className="py-2.5 px-3 font-medium">Email Akun</th>
+                <th className="py-2.5 px-3 font-medium">Username Login</th>
                 <th className="py-2.5 px-3 font-medium">Peran RBAC</th>
                 <th className="py-2.5 px-3 font-medium">Status</th>
                 {canManage && <th className="py-2.5 px-3 font-medium text-right">Aksi</th>}
@@ -542,7 +548,7 @@ export const UsersRbacView: React.FC = () => {
               {usersDirectory.map((u) => (
                 <tr key={u.id} className="hover:bg-slate-50">
                   <td className="py-2.5 px-3 font-semibold text-slate-900">{u.fullName}</td>
-                  <td className="py-2.5 px-3 font-mono text-slate-600">{u.email}</td>
+                  <td className="py-2.5 px-3 font-mono text-slate-700">{u.username || u.email || '-'}</td>
                   <td className="py-2.5 px-3 font-medium text-emerald-800">
                     {ROLE_DEFINITIONS[u.role]?.label || u.role}
                   </td>
@@ -550,10 +556,10 @@ export const UsersRbacView: React.FC = () => {
                   {canManage && (
                     <td className="py-2.5 px-3 text-right">
                       <button
-                        onClick={() => setUserModal(u)}
+                        onClick={() => setUserModal({ ...u, password: '' })}
                         className="text-emerald-700 font-semibold hover:underline"
                       >
-                        Ubah Peran
+                        Ubah Akun & Password
                       </button>
                     </td>
                   )}
@@ -562,6 +568,82 @@ export const UsersRbacView: React.FC = () => {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Self-service Password Update */}
+      <div className="bg-white border border-slate-200 rounded-xl p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <KeyRound className="w-4 h-4 text-emerald-700" />
+          <div>
+            <h2 className="font-display text-base font-bold text-slate-900">
+              Ubah Password Akun Saya ({currentUser?.username || currentUser?.fullName})
+            </h2>
+            <p className="text-xs text-slate-500">
+              Perbarui password login Anda secara berkala untuk menjaga keamanan akses SIMS
+            </p>
+          </div>
+        </div>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (pwdForm.newPassword.length < 4) {
+              pushToast('error', 'Password baru minimal 4 karakter.');
+              return;
+            }
+            if (pwdForm.newPassword !== pwdForm.confirmPassword) {
+              pushToast('error', 'Konfirmasi password baru tidak cocok.');
+              return;
+            }
+            setSavingPwd(true);
+            const res = await changeOwnPassword(pwdForm.currentPassword, pwdForm.newPassword);
+            setSavingPwd(false);
+            if (res.ok) {
+              setPwdForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+            }
+          }}
+          className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs items-end"
+        >
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Password Lama</label>
+            <input
+              type="password"
+              required
+              value={pwdForm.currentPassword}
+              onChange={(e) => setPwdForm({ ...pwdForm, currentPassword: e.target.value })}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Password Baru</label>
+            <input
+              type="password"
+              required
+              minLength={4}
+              value={pwdForm.newPassword}
+              onChange={(e) => setPwdForm({ ...pwdForm, newPassword: e.target.value })}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+            />
+          </div>
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Ulangi Password Baru</label>
+            <input
+              type="password"
+              required
+              minLength={4}
+              value={pwdForm.confirmPassword}
+              onChange={(e) => setPwdForm({ ...pwdForm, confirmPassword: e.target.value })}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={savingPwd}
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 disabled:opacity-50"
+          >
+            <Save className="w-3.5 h-3.5" />
+            {savingPwd ? 'Menyimpan...' : 'Simpan Password'}
+          </button>
+        </form>
       </div>
 
       {/* Interactive 7-Role RBAC Matrix */}
@@ -633,30 +715,79 @@ export const UsersRbacView: React.FC = () => {
           <form
             onSubmit={async (e) => {
               e.preventDefault();
-              await saveUserProfile({
+              const ok = await saveUserProfile({
                 id: userModal.id || '',
                 uid: userModal.uid || userModal.id || '',
-                email: userModal.email || '',
+                username: userModal.username || '',
+                password: userModal.password || undefined,
                 fullName: userModal.fullName || '',
                 role: userModal.role || 'guru',
                 isActive: userModal.isActive ?? true,
                 createdAt: userModal.createdAt || new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
               });
-              setUserModal(null);
+              if (ok) {
+                setUserModal(null);
+              }
             }}
             className="bg-white border border-slate-200 rounded-xl max-w-md w-full p-6 space-y-4 text-xs"
           >
-            <h3 className="font-display text-base font-bold text-slate-900">Kelola Akun & Peran Pengguna</h3>
-            <input required placeholder="Nama Lengkap" value={userModal.fullName || ''} onChange={(e) => setUserModal({ ...userModal, fullName: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg" />
-            <input required type="email" placeholder="Alamat Email Google" value={userModal.email || ''} onChange={(e) => setUserModal({ ...userModal, email: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono" />
-            <select value={userModal.role || 'guru'} onChange={(e) => setUserModal({ ...userModal, role: e.target.value as RoleCode })} className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white">
-              {Object.values(ROLE_DEFINITIONS).map((r) => (
-                <option key={r.code} value={r.code}>{r.label}</option>
-              ))}
-            </select>
+            <h3 className="font-display text-base font-bold text-slate-900">
+              {userModal.id ? 'Ubah Akun & Password Pengguna' : 'Daftarkan Akun Baru (Tanpa Email)'}
+            </h3>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Nama Lengkap</label>
+              <input
+                required
+                placeholder="Nama Lengkap"
+                value={userModal.fullName || ''}
+                onChange={(e) => setUserModal({ ...userModal, fullName: e.target.value })}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Username Login</label>
+              <input
+                required
+                type="text"
+                placeholder="Contoh: guru_ipa, kepsek, wali_xa"
+                value={userModal.username || ''}
+                onChange={(e) => setUserModal({ ...userModal, username: e.target.value })}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg font-mono"
+              />
+            </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">
+                {userModal.id ? 'Password Baru (opsional, kosongkan jika tetap)' : 'Password Akun'}
+              </label>
+              <input
+                required={!userModal.id}
+                type="password"
+                minLength={userModal.id ? undefined : 4}
+                placeholder={userModal.id ? 'Isi hanya jika ingin mereset password' : 'Minimal 4 karakter'}
+                value={userModal.password || ''}
+                onChange={(e) => setUserModal({ ...userModal, password: e.target.value })}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="block font-medium text-slate-700 mb-1">Peran RBAC</label>
+              <select
+                value={userModal.role || 'guru'}
+                onChange={(e) => setUserModal({ ...userModal, role: e.target.value as RoleCode })}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white"
+              >
+                {Object.values(ROLE_DEFINITIONS).map((r) => (
+                  <option key={r.code} value={r.code}>{r.label}</option>
+                ))}
+              </select>
+            </div>
             <label className="flex items-center gap-2 text-slate-700">
-              <input type="checkbox" checked={userModal.isActive ?? true} onChange={(e) => setUserModal({ ...userModal, isActive: e.target.checked })} />
+              <input
+                type="checkbox"
+                checked={userModal.isActive ?? true}
+                onChange={(e) => setUserModal({ ...userModal, isActive: e.target.checked })}
+              />
               <span>Akun Aktif</span>
             </label>
             <div className="flex justify-end gap-2">

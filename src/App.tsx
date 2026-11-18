@@ -1,5 +1,16 @@
 import React, { useState } from 'react';
-import { CheckCircle2, Info, LogIn, ShieldCheck, X, XCircle } from 'lucide-react';
+import {
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Info,
+  Lock,
+  LogIn,
+  ShieldCheck,
+  User,
+  X,
+  XCircle,
+} from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SimsProvider, useSims } from './services/simsStore';
 import { SchoolProfilePublic } from './components/SchoolProfilePublic';
@@ -53,9 +64,30 @@ const ToastStack: React.FC = () => {
 };
 
 const MainRouter: React.FC = () => {
-  const { authReady, firebaseUser, currentUser, loginWithGoogle, loadingData } = useSims();
+  const { authReady, currentUser, loginWithCredentials, loadingData } = useSims();
   const [viewMode, setViewMode] = useState<'public' | 'portal'>('public');
   const [activePage, setActivePage] = useState<SimsPage>('dashboard');
+
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loginError, setLoginError] = useState('');
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+    if (!username.trim() || !password) {
+      setLoginError('Username dan password wajib diisi.');
+      return;
+    }
+    const res = await loginWithCredentials(username, password);
+    if (!res.ok) {
+      setLoginError(res.error || 'Username atau password salah.');
+    } else {
+      setPassword('');
+      setActivePage('dashboard');
+    }
+  };
 
   if (!authReady) {
     return (
@@ -64,7 +96,7 @@ const MainRouter: React.FC = () => {
           <p className="font-display text-base font-bold text-slate-900">
             SMA Darul Ulum Kepohbaru
           </p>
-          <p className="text-xs text-slate-500">Mempersiapkan sistem dan koneksi basis data...</p>
+          <p className="text-xs text-slate-500">Mempersiapkan sistem dan basis data sekolah...</p>
         </div>
       </div>
     );
@@ -74,46 +106,109 @@ const MainRouter: React.FC = () => {
     return <SchoolProfilePublic onEnterPortal={() => setViewMode('portal')} />;
   }
 
-  if (!firebaseUser || !currentUser) {
+  if (!currentUser) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-6">
-        <div className="max-w-md w-full bg-white border border-slate-200 rounded-xl p-8 space-y-6">
+        <div className="max-w-md w-full bg-white border border-slate-200 rounded-xl p-8 space-y-6 shadow-sm">
           <div>
             <p className="text-xs font-medium text-emerald-800 mb-1">Portal Terpadu SIMS</p>
             <h1 className="font-display text-xl font-bold text-slate-900">
-              Masuk ke SIMS SMA Darul Ulum Kepohbaru
+              Login SIMS SMA Darul Ulum Kepohbaru
             </h1>
-            <p className="text-xs text-slate-600 mt-2 leading-relaxed">
-              Autentikasi aman berbasis peran untuk Kepala Sekolah, Guru, Tenaga Kependidikan, Supervisor, Wali Kelas, dan Orang Tua / Wali Siswa.
+            <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
+              Masuk menggunakan <span className="font-semibold text-slate-800">Username</span> dan{' '}
+              <span className="font-semibold text-slate-800">Password</span> akun sekolah tanpa email.
             </p>
           </div>
 
-          <div className="p-4 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 space-y-1.5">
-            <p className="font-semibold text-slate-800 flex items-center gap-1.5">
-              <ShieldCheck className="w-4 h-4 text-emerald-700" />
-              Keamanan Akses Terverifikasi
-            </p>
-            <p>
-              Gunakan akun Google resmi sekolah atau akun Google yang telah didaftarkan oleh Administrator Sekolah.
-            </p>
-          </div>
+          <form onSubmit={handleLoginSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="sims-username"
+                className="block text-xs font-semibold text-slate-700 mb-1.5"
+              >
+                Username
+              </label>
+              <div className="relative">
+                <User className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  id="sims-username"
+                  type="text"
+                  autoComplete="username"
+                  required
+                  placeholder="Admin"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-700"
+                />
+              </div>
+            </div>
 
-          <div className="space-y-2.5">
-            <button
-              onClick={loginWithGoogle}
-              disabled={loadingData}
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors disabled:opacity-50"
-            >
-              <LogIn className="w-4 h-4" />
-              {loadingData ? 'Memuat Profil Akun...' : 'Masuk dengan Akun Google'}
-            </button>
-            <button
-              onClick={() => setViewMode('public')}
-              className="w-full px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200"
-            >
-              Kembali ke Website Profil Sekolah
-            </button>
-          </div>
+            <div>
+              <label
+                htmlFor="sims-password"
+                className="block text-xs font-semibold text-slate-700 mb-1.5"
+              >
+                Password
+              </label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  id="sims-password"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  required
+                  placeholder="Masukkan password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-9 pr-10 py-2.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:border-emerald-700"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+                  aria-label={showPassword ? 'Sembunyikan password' : 'Lihat password'}
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {loginError && (
+              <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">
+                {loginError}
+              </div>
+            )}
+
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 space-y-1">
+              <p className="font-semibold text-slate-800 flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-emerald-700" />
+                Kredensial Default Administrator
+              </p>
+              <p className="font-mono text-[11px] text-slate-700">
+                User: <span className="font-bold">Admin</span> · Password:{' '}
+                <span className="font-bold">Admin123</span>
+              </p>
+            </div>
+
+            <div className="space-y-2.5 pt-1">
+              <button
+                type="submit"
+                disabled={loadingData}
+                className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors disabled:opacity-50"
+              >
+                <LogIn className="w-4 h-4" />
+                {loadingData ? 'Memverifikasi Akun...' : 'Masuk Portal SIMS'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('public')}
+                className="w-full px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                Kembali ke Website Profil Sekolah
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     );
