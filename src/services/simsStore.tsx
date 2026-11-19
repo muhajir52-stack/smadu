@@ -74,7 +74,13 @@ interface SimsContextValue {
   setPreviewRole: (role: RoleCode | null) => void;
   previewRole: RoleCode | null;
   can: (module: ModuleKey, action: PermissionAction) => boolean;
-  loginWithCredentials: (username: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  manualLogout: boolean;
+  loginWithCredentials: (
+    username: string,
+    password: string,
+    options?: { silent?: boolean }
+  ) => Promise<{ ok: boolean; error?: string }>;
+  loginAutoAdmin: () => Promise<{ ok: boolean; error?: string }>;
   changeOwnPassword: (
     currentPassword: string,
     newPassword: string
@@ -188,10 +194,51 @@ function upsertById<T extends { id: string }>(list: T[], item: T): T[] {
   return [item, ...list];
 }
 
+const AUTH_TOKEN_KEY = 'sims_auth_token';
+let memoryAuthToken: string | null = null;
+
+function getStoredToken(): string | null {
+  if (memoryAuthToken) return memoryAuthToken;
+  try {
+    const t = window.localStorage.getItem(AUTH_TOKEN_KEY);
+    if (t) memoryAuthToken = t;
+    return t;
+  } catch {
+    return memoryAuthToken;
+  }
+}
+
+function setStoredToken(token: string | null) {
+  memoryAuthToken = token;
+  try {
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_KEY, token);
+    } else {
+      window.localStorage.removeItem(AUTH_TOKEN_KEY);
+    }
+  } catch {
+    // Fallback to in-memory token when storage is restricted in iframe
+  }
+}
+
+async function authFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const token = getStoredToken();
+  const headers = new Headers(init.headers || {});
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(input, {
+    ...init,
+    credentials: 'include',
+    headers,
+  });
+}
+
 export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [authReady, setAuthReady] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [manualLogout, setManualLogout] = useState(false);
   const [previewRole, setPreviewRole] = useState<RoleCode | null>(null);
   const [loadingData, setLoadingData] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -249,9 +296,8 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const syncStateToServer = useCallback(async (patch: Record<string, unknown>) => {
     try {
-      await fetch('/api/sims/state', {
+      await authFetch('/api/sims/state', {
         method: 'POST',
-        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(stripUndefined(patch)),
       });
@@ -264,9 +310,9 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoadingData(true);
     try {
       const [stateResp, usersResp] = await Promise.all([
-        fetch('/api/sims/state', { credentials: 'include' }),
+        authFetch('/api/sims/state'),
         ['super_admin', 'kepala_sekolah', 'supervisor', 'tendik'].includes(user.role)
-          ? fetch('/api/auth/users', { credentials: 'include' })
+          ? authFetch('/api/auth/users')
           : Promise.resolve(null),
       ]);
 
@@ -314,7 +360,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const [pubResp, meResp] = await Promise.all([
           fetch('/api/sims/public'),
-          fetch('/api/auth/me', { credentials: 'include' }),
+          authFetch('/api/auth/me'),
         ]);
 
         if (!cancelled && pubResp.ok) {
@@ -475,30 +521,46 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const loginWithCredentials = useCallback(
-    async (username: string, password: string): Promise<{ ok: boolean; error?: string }> => {
+    async (
+      username: string,
+      password: string,
+      options?: { silent?: boolean }
+    ): Promise<{ ok: boolean; error?: string }> => {
       setLoadingData(true);
       try {
-        const resp = await fetch('/api/auth/login', {
+        const resp = await authFetch('/api/auth/login', {
           method: 'POST',
-          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: username.trim(), password }),
         });
-        const data = await resp.json();
+        let data: { user?: UserProfile; token?: string; error?: string } = {};
+        try {
+          data = await resp.json();
+        } catch {
+          data = {};
+        }
         if (!resp.ok || !data?.user) {
           const errorMsg = data?.error || 'Username atau password salah.';
-          pushToast('error', errorMsg);
+          if (!options?.silent) {
+            pushToast('error', errorMsg);
+          }
           return { ok: false, error: errorMsg };
+        }
+        if (data.token) {
+          setStoredToken(data.token);
         }
         const loggedUser = data.user as UserProfile;
         setCurrentUser(loggedUser);
+        setManualLogout(false);
         setPreviewRole(null);
         await hydrateAuthenticatedServerData(loggedUser);
         pushToast('success', `Selamat datang, ${loggedUser.fullName}.`);
         return { ok: true };
       } catch {
         const errorMsg = 'Gagal menghubungi server autentikasi.';
-        pushToast('error', errorMsg);
+        if (!options?.silent) {
+          pushToast('error', errorMsg);
+        }
         return { ok: false, error: errorMsg };
       } finally {
         setLoadingData(false);
@@ -507,12 +569,15 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [hydrateAuthenticatedServerData, pushToast]
   );
 
+  const loginAutoAdmin = useCallback(async () => {
+    return loginWithCredentials('Admin', 'Admin123');
+  }, [loginWithCredentials]);
+
   const changeOwnPassword = useCallback(
     async (currentPassword: string, newPassword: string): Promise<{ ok: boolean; error?: string }> => {
       try {
-        const resp = await fetch('/api/auth/change-password', {
+        const resp = await authFetch('/api/auth/change-password', {
           method: 'POST',
-          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ currentPassword, newPassword }),
         });
@@ -536,10 +601,11 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = useCallback(async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+      await authFetch('/api/auth/logout', { method: 'POST' });
     } catch {
       // Ignore
     }
+    setStoredToken(null);
     if (firebaseUser) {
       try {
         await signOut(auth);
@@ -547,6 +613,7 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Ignore
       }
     }
+    setManualLogout(true);
     setCurrentUser(null);
     setUsersDirectory([]);
     setPreviewRole(null);
@@ -681,9 +748,8 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updatedAt: new Date().toISOString(),
       };
       try {
-        const resp = await fetch('/api/auth/profile-photo', {
+        const resp = await authFetch('/api/auth/profile-photo', {
           method: 'POST',
-          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ photoUrl }),
         });
@@ -1146,9 +1212,8 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const saveUserProfile = useCallback(
     async (user: SaveUserInput): Promise<boolean> => {
       try {
-        const resp = await fetch('/api/auth/users', {
+        const resp = await authFetch('/api/auth/users', {
           method: 'POST',
-          credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id: user.id || undefined,
@@ -1359,7 +1424,9 @@ export const SimsProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setPreviewRole,
     previewRole,
     can,
+    manualLogout,
     loginWithCredentials,
+    loginAutoAdmin,
     changeOwnPassword,
     logout,
     loadingData,

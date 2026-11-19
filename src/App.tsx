@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
   Eye,
@@ -10,6 +10,7 @@ import {
   User,
   X,
   XCircle,
+  Zap,
 } from 'lucide-react';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { SimsProvider, useSims } from './services/simsStore';
@@ -64,14 +65,43 @@ const ToastStack: React.FC = () => {
 };
 
 const MainRouter: React.FC = () => {
-  const { authReady, currentUser, loginWithCredentials, loadingData } = useSims();
+  const {
+    authReady,
+    currentUser,
+    manualLogout,
+    loginWithCredentials,
+    loginAutoAdmin,
+    loadingData,
+  } = useSims();
   const [viewMode, setViewMode] = useState<'public' | 'portal'>('public');
   const [activePage, setActivePage] = useState<SimsPage>('dashboard');
 
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('Admin');
+  const [password, setPassword] = useState('Admin123');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [autoLoggingIn, setAutoLoggingIn] = useState(false);
+  const autoLoginAttemptedRef = useRef(false);
+
+  // Automatic login into the Admin account when entering Portal SIMS (unless user explicitly logged out)
+  useEffect(() => {
+    if (
+      viewMode === 'portal' &&
+      authReady &&
+      !currentUser &&
+      !manualLogout &&
+      !autoLoginAttemptedRef.current
+    ) {
+      autoLoginAttemptedRef.current = true;
+      setAutoLoggingIn(true);
+      loginWithCredentials('Admin', 'Admin123', { silent: true }).finally(() => {
+        setAutoLoggingIn(false);
+      });
+    }
+    if (manualLogout) {
+      autoLoginAttemptedRef.current = true;
+    }
+  }, [authReady, currentUser, loginWithCredentials, manualLogout, viewMode]);
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -89,21 +119,44 @@ const MainRouter: React.FC = () => {
     }
   };
 
-  if (!authReady) {
+  const handleQuickLogin = async (user: string, pass: string) => {
+    setLoginError('');
+    setUsername(user);
+    setPassword(pass);
+    const res = await loginWithCredentials(user, pass);
+    if (!res.ok) {
+      setLoginError(res.error || 'Gagal melakukan login otomatis.');
+    } else {
+      setPassword('');
+      setActivePage('dashboard');
+    }
+  };
+
+  if (!authReady || (viewMode === 'portal' && autoLoggingIn && !currentUser)) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] flex items-center justify-center p-6">
         <div className="text-center space-y-2">
           <p className="font-display text-base font-bold text-slate-900">
             SMA Darul Ulum Kepohbaru
           </p>
-          <p className="text-xs text-slate-500">Mempersiapkan sistem dan basis data sekolah...</p>
+          <p className="text-xs text-slate-500">
+            {autoLoggingIn
+              ? 'Masuk otomatis dengan akun Admin...'
+              : 'Mempersiapkan sistem dan basis data sekolah...'}
+          </p>
         </div>
       </div>
     );
   }
 
   if (viewMode === 'public') {
-    return <SchoolProfilePublic onEnterPortal={() => setViewMode('portal')} />;
+    return (
+      <SchoolProfilePublic
+        onEnterPortal={() => {
+          setViewMode('portal');
+        }}
+      />
+    );
   }
 
   if (!currentUser) {
@@ -117,8 +170,38 @@ const MainRouter: React.FC = () => {
             </h1>
             <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
               Masuk menggunakan <span className="font-semibold text-slate-800">Username</span> dan{' '}
-              <span className="font-semibold text-slate-800">Password</span> akun sekolah tanpa email.
+              <span className="font-semibold text-slate-800">Password</span> tanpa email, atau gunakan akun login otomatis di bawah ini.
             </p>
+          </div>
+
+          {/* 1-Click Auto-Login Developer / Quick Access Box */}
+          <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2.5">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                <Zap className="w-4 h-4 text-emerald-700" />
+                Akses Cepat & Login Otomatis
+              </p>
+              <span className="text-[11px] font-mono text-emerald-800">Tanpa Email</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                disabled={loadingData}
+                onClick={() => loginAutoAdmin()}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors disabled:opacity-50"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                Login Otomatis Admin
+              </button>
+              <button
+                type="button"
+                disabled={loadingData}
+                onClick={() => handleQuickLogin('kepsek', 'Kepsek123')}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-900 bg-white border border-emerald-300 rounded-lg hover:bg-emerald-100/60 transition-colors disabled:opacity-50"
+              >
+                Login Kepala Sekolah
+              </button>
+            </div>
           </div>
 
           <form onSubmit={handleLoginSubmit} className="space-y-4">
@@ -183,11 +266,13 @@ const MainRouter: React.FC = () => {
             <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 space-y-1">
               <p className="font-semibold text-slate-800 flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-emerald-700" />
-                Kredensial Default Administrator
+                Kredensial Bawaan
               </p>
               <p className="font-mono text-[11px] text-slate-700">
-                User: <span className="font-bold">Admin</span> · Password:{' '}
-                <span className="font-bold">Admin123</span>
+                Admin: <span className="font-bold">Admin</span> / <span className="font-bold">Admin123</span>
+              </p>
+              <p className="font-mono text-[11px] text-slate-700">
+                Kepala Sekolah: <span className="font-bold">kepsek</span> / <span className="font-bold">Kepsek123</span>
               </p>
             </div>
 

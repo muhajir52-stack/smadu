@@ -13,6 +13,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '10mb' }));
 
 // Runtime local persistence files for Username/Password auth and SIMS data
@@ -72,68 +73,96 @@ function sanitizeUser(u: StoredAuthUser) {
   };
 }
 
-function loadAuthUsers(): StoredAuthUser[] {
-  if (!fs.existsSync(AUTH_USERS_FILE)) {
-    const now = new Date().toISOString();
-    const adminPass = hashPassword('Admin123');
-    const defaults: StoredAuthUser[] = [
-      {
-        id: 'usr-admin',
-        uid: 'usr-admin',
-        username: 'Admin',
-        fullName: 'H. Ahmad Muhajir, S.Pd., M.Pd.',
-        role: 'super_admin',
-        isActive: true,
-        salt: adminPass.salt,
-        passwordHash: adminPass.hash,
-        createdAt: now,
-        updatedAt: now,
-      },
-      {
-        id: 'usr-kepsek',
-        uid: 'usr-kepsek',
-        username: 'kepsek',
-        fullName: 'H. Ahmad Muhajir, S.Pd., M.Pd.',
-        role: 'kepala_sekolah',
-        isActive: true,
-        salt: hashPassword('Kepsek123').salt,
-        passwordHash: '',
-        createdAt: now,
-        updatedAt: now,
-      },
-    ];
-    // Re-hash kepsek consistently
-    const kepsekPass = hashPassword('Kepsek123');
-    defaults[1].salt = kepsekPass.salt;
-    defaults[1].passwordHash = kepsekPass.hash;
+let memoryAuthUsers: StoredAuthUser[] | null = null;
+let memorySimsStore: Record<string, unknown> | null = null;
 
-    fs.writeFileSync(AUTH_USERS_FILE, JSON.stringify(defaults, null, 2), 'utf8');
-    return defaults;
+function createDefaultUsers(): StoredAuthUser[] {
+  const now = new Date().toISOString();
+  const adminPass = hashPassword('Admin123');
+  const kepsekPass = hashPassword('Kepsek123');
+  return [
+    {
+      id: 'usr-admin',
+      uid: 'usr-admin',
+      username: 'Admin',
+      fullName: 'H. Ahmad Muhajir, S.Pd., M.Pd.',
+      role: 'super_admin',
+      isActive: true,
+      salt: adminPass.salt,
+      passwordHash: adminPass.hash,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: 'usr-kepsek',
+      uid: 'usr-kepsek',
+      username: 'kepsek',
+      fullName: 'H. Ahmad Muhajir, S.Pd., M.Pd.',
+      role: 'kepala_sekolah',
+      isActive: true,
+      salt: kepsekPass.salt,
+      passwordHash: kepsekPass.hash,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+}
+
+function loadAuthUsers(): StoredAuthUser[] {
+  if (fs.existsSync(AUTH_USERS_FILE)) {
+    try {
+      const raw = fs.readFileSync(AUTH_USERS_FILE, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        memoryAuthUsers = parsed;
+        return parsed;
+      }
+    } catch {
+      // Fallback below
+    }
   }
+  if (memoryAuthUsers && memoryAuthUsers.length > 0) {
+    return memoryAuthUsers;
+  }
+  const defaults = createDefaultUsers();
+  memoryAuthUsers = defaults;
   try {
-    const raw = fs.readFileSync(AUTH_USERS_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    fs.writeFileSync(AUTH_USERS_FILE, JSON.stringify(defaults, null, 2), 'utf8');
   } catch {
-    return [];
+    // Keep in-memory users if filesystem is read-only
   }
+  return defaults;
 }
 
 function saveAuthUsers(users: StoredAuthUser[]) {
-  fs.writeFileSync(AUTH_USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
-}
-
-function loadSimsStore(): Record<string, unknown> {
-  if (!fs.existsSync(DATA_STORE_FILE)) return {};
+  memoryAuthUsers = users;
   try {
-    return JSON.parse(fs.readFileSync(DATA_STORE_FILE, 'utf8')) || {};
+    fs.writeFileSync(AUTH_USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
   } catch {
-    return {};
+    // Keep in-memory state if filesystem write fails
   }
 }
 
+function loadSimsStore(): Record<string, unknown> {
+  if (fs.existsSync(DATA_STORE_FILE)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(DATA_STORE_FILE, 'utf8')) || {};
+      memorySimsStore = parsed;
+      return parsed;
+    } catch {
+      // Fallback below
+    }
+  }
+  return memorySimsStore || {};
+}
+
 function saveSimsStore(data: Record<string, unknown>) {
-  fs.writeFileSync(DATA_STORE_FILE, JSON.stringify(data, null, 2), 'utf8');
+  memorySimsStore = data;
+  try {
+    fs.writeFileSync(DATA_STORE_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch {
+    // Keep in-memory state if filesystem write fails
+  }
 }
 
 function signToken(payload: { uid: string; username: string; exp: number }): string {
@@ -176,9 +205,16 @@ function parseCookies(req: express.Request): Record<string, string> {
   return result;
 }
 
+function isHttpsRequest(req: express.Request): boolean {
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  return req.secure || proto === 'https';
+}
+
 function getAuthenticatedUser(req: express.Request): StoredAuthUser | null {
+  const authHeader = req.headers.authorization || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   const cookies = parseCookies(req);
-  const token = cookies[SESSION_COOKIE_NAME];
+  const token = bearerToken || cookies[SESSION_COOKIE_NAME];
   if (!token) return null;
   const decoded = verifyToken(token);
   if (!decoded) return null;
@@ -216,14 +252,16 @@ app.post('/api/auth/login', (req, res) => {
 
   const exp = Date.now() + 1000 * 60 * 60 * 24 * 7; // 7 days
   const token = signToken({ uid: matched.uid, username: matched.username, exp });
+  const isHttps = isHttpsRequest(req);
   res.cookie(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: isHttps ? 'none' : 'lax',
+    secure: isHttps,
     path: '/',
     maxAge: 1000 * 60 * 60 * 24 * 7,
   });
 
-  return res.json({ user: sanitizeUser(matched) });
+  return res.json({ user: sanitizeUser(matched), token });
 });
 
 app.get('/api/auth/me', (req, res) => {
@@ -234,8 +272,13 @@ app.get('/api/auth/me', (req, res) => {
   return res.json({ user: sanitizeUser(user) });
 });
 
-app.post('/api/auth/logout', (_req, res) => {
-  res.clearCookie(SESSION_COOKIE_NAME, { path: '/' });
+app.post('/api/auth/logout', (req, res) => {
+  const isHttps = isHttpsRequest(req);
+  res.clearCookie(SESSION_COOKIE_NAME, {
+    path: '/',
+    sameSite: isHttps ? 'none' : 'lax',
+    secure: isHttps,
+  });
   return res.json({ ok: true });
 });
 
